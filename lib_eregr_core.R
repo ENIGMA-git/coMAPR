@@ -1,3 +1,4 @@
+
 library(dplyr)
 library(RSQLite)
 library(tidyr)
@@ -7,6 +8,8 @@ library(DBI)
 library(tictoc)
 library(stringr)
 library(purrr)
+
+
 #----auxiliary
 var_as_num <- function (x,varname) {
     x[[varname]] <- as.numeric(x[[varname]])
@@ -117,8 +120,8 @@ eregr_write_results_linear_models <- function (db_conn, study_Id, site_Id, ROI,r
         df_pbeta <- cbind(df_pbeta,df_metr,df_vert)
         df_pbeta <- df_pbeta %>% gather (key="var",value="p_beta",-metric,-vertex)
             
-        df_res <- inner_join(df_beta,df_sterr, by=c("metric","vertex","var"))
-        df_res <- inner_join(df_res, df_pbeta, by=c("metric","vertex","var"))
+        df_res <- suppressMessages(inner_join(df_beta,df_sterr, by=c("metric","vertex","var")))
+        df_res <- suppressMessages(inner_join(df_res, df_pbeta, by=c("metric","vertex","var")))
             
         #process lm_cohensd_results table
         
@@ -243,8 +246,8 @@ eregr_get_lm_vars <- function (db_conn, study_Id, session_Id, lm_Id = "", tbl_va
                        tbl_lm, study_Id, session_Id)
     if(lm_Id != "") query_vars <- sprintf ("%s AND lmID='%s'",query_lm, lm_Id)
     res_lm <- dbGetQuery(db_conn,query_lm)
-    res <- res_vars %>%
-            left_join(res_lm)
+    res <- suppressMessages(res_vars %>%
+            left_join(res_lm))
     res %>%
         select (var, lm_text, lmID, modifier)
 }
@@ -411,11 +414,11 @@ eregr_run_linear_models <- function (db_conn, study_Id, site_Id, ROI , excludeSu
         
         #assert pre-check conditions
         eregr_assert_model_precheck(n_value)
-                  
+        message("Running model: ",lm_Id)
         #joining with metrics
-        df_full <- metr_data %>% 
+        df_full <- suppressMessages(metr_data %>% 
                     inner_join(df_covar) %>%
-                        rename(res = value)
+                        rename(res = value))
         #splitting by metric and vertex
         df_list <- df_full %>% split (list(df_full$metric,df_full$vertex))
         df_metrvert <- as.list(names(df_list)) %>%
@@ -444,9 +447,9 @@ eregr_run_linear_models <- function (db_conn, study_Id, site_Id, ROI , excludeSu
     #2. read line from study_Id
     study_info <- eregr_get_study_info(db_conn,study_Id)
     gs_lm_path <- study_info[['study_analysis_path']]
-    gs_lm_data <- gs_lm_path %>%
+    gs_lm_data <- suppressMessages(gs_lm_path %>%
                     gs_url() %>%
-                        gs_read()
+                        gs_read())
     #3. register models
     res_lm_reg <- pmap(list(lm_Id = gs_lm_data[['ID']]),safely(eregr_int_register_lm), db_conn = db_conn, session_Id = session_Id,study_Id = study_Id,
                           gs_data = gs_lm_data, gsheet_lm_path = gs_lm_path, use_uscores = TRUE)
@@ -539,9 +542,9 @@ eregr_register_models_within_session <- function (db_conn, study_Id,gsheet_lm_pa
     if(generate_session_Id) session_Id <- eregr_int_register_session_lm(db_conn,study_Id)
     
 #for debugging purposes - registering just one model
-    gs_data <- gsheet_lm_path %>%
+    gs_data <- suppressMessages(gsheet_lm_path %>%
                 gs_url() %>%
-                    gs_read()
+                    gs_read())
     
     if (lm_Id != '') {
         eregr_int_register_lm(db_conn,lm_Id = lm_Id,session_Id = session_Id,study_Id = study_Id,
@@ -575,6 +578,10 @@ eregr_get_lm_filter <- function (db_conn, study_Id, session_Id, lm_Id, tbl_filte
 
 #connect to database routine
 eregr_connect <- function (db_path,db_class=RSQLite::SQLite()) {
+    #checking for existence of SQLite database:
+    if (class(db_class)==class(RSQLite::SQLite()))
+	if (!file.exists(db_path))
+		stop(paste("File ",db_path," does not exist. Cannot connect to a database",sep=""))
     return (dbConnect(db_class,db_path)) 
 }
 
@@ -597,14 +604,16 @@ eregr_int_get_tbl_header <- function (db_conn,tblname) {
 eregr_register_study <- function (db_conn,study_Id, study_Name, gsheet_path, study_tblname="studies", study_metr_tblname="study_metrics") {
 
     #read sheet and select line with study_Id from it     
-    gsheet <- gsheet_path %>%
-                gs_url()
-    gs_model <- gsheet %>%
+    gsheet <- suppressMessages(gsheet_path %>%
+                gs_url())
+    gs_model <- suppressMessages(gsheet %>%
                     gs_read() %>%
-                        filter(ID==study_Id)
+                        filter(ID==study_Id))
     #check if there's exactly one row with this ID
-    if (nrow(gs_model) != 1) return(FALSE)
-        
+    if (nrow(gs_model) != 1) {
+	err <- simpleError(paste("no rows in google sheet for the study: \t", study_Id,sep="")) 	
+	stop(err)
+    }    
     rec_study <- eregr_int_get_tbl_header(db_conn, study_tblname)
     #some renaming to fit the database naming convention
     rec_model <- gs_model %>%
@@ -629,10 +638,17 @@ eregr_register_study <- function (db_conn,study_Id, study_Name, gsheet_path, stu
     rec_study[1,'study_demographics_path'] <- rec_model[['study_demographics_path']]
     rec_study[1,'study_data_format'] <- rec_model[['study_data_format']]
     rec_study[1,'study_gDoc_path'] <- gsheet_path
-#    return (rec_study)
     #writing to database
     l_studies_write <- dbWriteTable(db_conn,name = study_tblname, value = rec_study, append=TRUE)
-    l_st_metrics_write <- dbWriteTable(db_conn,name = study_metr_tblname, value = rec_study_metrics, append=TRUE)
+				
+    if (!l_studies_write) {
+	stop("could not write a study to 'studies' table: ",study_Id,"\n")
+    }
+    l_st_metrics_write <- tryCatch(dbWriteTable(db_conn,name = study_metr_tblname, value = rec_study_metrics, append=TRUE),
+				   error = function(e) FALSE)
+    if (!l_st_metrics_write) {
+	stop("could not write metrics information  into metrics table. Study: ", study_Id)
+    }
     return (l_studies_write & l_st_metrics_write)
 }
     
@@ -650,7 +666,7 @@ eregr_register_site <- function (db_conn,study_Id,site_Id,study_tblname="studies
                         filter(studyID==study_Id) %>%
                             summarise(n=n()) %>%
                                 as.data.frame()
-    if(study_exist$n!=1) return (FALSE)
+    if(study_exist$n!=1) stop("study ", study_Id, " does not exist in studies table")
     
     #append a new row to a sites table
     tbl_sites <- dbReadTable(db_conn,name=site_tblname)
@@ -658,7 +674,9 @@ eregr_register_site <- function (db_conn,study_Id,site_Id,study_tblname="studies
     rec_site[1,] <- c("","")
     rec_site$studyID[1] <- study_Id
     rec_site$siteID[1] <- site_Id
-    l_site_write <- dbWriteTable(db_conn,name=site_tblname,value=rec_site,append=TRUE)
+    l_site_write <- tryCatch(dbWriteTable(db_conn,name=site_tblname,value=rec_site,append=TRUE),
+			     error = function(e) {message(e);FALSE})
+    if (!l_site_write) stop ("couldn't site information to database: \t", site_Id)
     return (l_site_write)
 }
     
@@ -866,9 +884,9 @@ eregr_int_register_lm <- function (db_conn, lm_Id, session_Id, study_Id, gs_data
                     filter(ID==lm_Id)
     if (nrow(gs_lm) != 1) return(FALSE)
     if (gs_lm$Active !=1 ) {
-        print(paste("Model",lm_Id,"is not active. Skipping registration"))
         return(FALSE)
     }
+    message ("Registering model: ",lm_Id)
     tbl_lm <- dbReadTable(db_conn,name=lm_tblname)
     rec_lm <- tbl_lm[0,]
     rec_lm[1,] <- vector("character",ncol(tbl_lm))
@@ -928,7 +946,6 @@ eregr_read_shape_all_subjects <- function (db_conn, data_dir, subj_list, roi_lis
     }
         
     ses_metr_ID<-eregr_int_register_session_loadmetr(db_conn)
-    message("roi_list: ", length(roi_list))
     res<-map(subj_list,~eregr_read_shape_one_subject(db_conn,data_dir,roi_list,metrics_list,study_Id,.,site_Id,ses_metr_ID, rewrite = rewrite) )
     
     #remove all empty results (those that finished correctly)
@@ -956,8 +973,6 @@ eregr_read_shape_all_subjects <- function (db_conn, data_dir, subj_list, roi_lis
 eregr_int_register_session_loadmetr <- function(db_conn,session_tblname="session_loadMetrics") {
     
     id_and_time <- eregr_int_get_unique_time_id()
-    print ('id and time:')
-    print (id_and_time)
     tbl_session_metrics <- dbReadTable(db_conn,name=session_tblname)
     rec_session_metr <- tbl_session_metrics[0,]
 
@@ -1083,18 +1098,18 @@ eregr_register_covariates <- function (db_conn, study_Id, site_Id, cov_file_path
                         as.numeric(cov_data[,i])
                     },
                     warning = function(w) {
-                        print ("Warning: possible problems with conversion of data to numeric. Please check your data.")
+                        message ("Warning: possible problems with conversion of data to numeric. Please check your data.")
                         rep(c("NULL"),nrow(cov_data))
                     },
                     error = function(e) {
-                        print ("Error: possible problems with conversion of data to numeric. Please check your data.")
+                        message ("Error: possible problems with conversion of data to numeric. Please check your data.")
                         rep(c("NULL"),nrow(cov_data))
                 },
                     finally = {
                     }
                 )
                 if ("NULL" %in% cov_data[,i]) {
-                    print ("Exiting function because of possible problems with conversion.")
+                    message ("Exiting function because of possible problems with conversion.")
                     return (cov_data[0,])
                 }
 
@@ -1106,11 +1121,11 @@ eregr_register_covariates <- function (db_conn, study_Id, site_Id, cov_file_path
     
     
     cov <- read_covariates()
-    if (nrow(cov)<1) return (FALSE)
+    if (nrow(cov)<1) stop("Could not read covariates")
 
     cov_sess_ID <- eregr_int_register_covar_session (db_conn, study_Id, site_Id, cov_file_path, 
                                        tbl_sess_covariates)
-    if (cov_sess_ID == FALSE) return (FALSE)
+    if (cov_sess_ID == FALSE) stop ("Could not register session for covariates")
     if(eregr_int_exists_covars(db_conn, study_Id, site_Id, tbl_covariates)>0) 
         eregr_int_erase_covars (db_conn, study_Id, site_Id, tbl_covariates)
     #edit - it should be data frame with zero rows.
@@ -1127,7 +1142,7 @@ eregr_register_covariates <- function (db_conn, study_Id, site_Id, cov_file_path
     rec_tbl_cov[1:nrow(cov_gathered),'cov_value'] <-cov_gathered$cov_value
     rec_tbl_cov[1:nrow(cov_gathered),'session_covar_ID'] <- rep(cov_sess_ID,nrow(cov_gathered))
     l_tbl_cov_write <- dbWriteTable(db_conn, name = tbl_covariates, value = rec_tbl_cov, append = TRUE)
-    if (l_tbl_cov_write) return (rec_tbl_cov) else return (FALSE)
+    if (l_tbl_cov_write) return (rec_tbl_cov) else stop("Could not write covariates data to the database table")
 }
 
 eregr_get_subjlist_from_covars <- function (db_conn, study_Id, site_Id, tbl_covariates = "covariates_general") {
