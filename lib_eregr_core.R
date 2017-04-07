@@ -46,7 +46,6 @@ condition <- function(subclass, par, message, call = sys.call(-1)) {
 
 
 
-
 eregr_assert_model_precheck <- function(n_values) {
     assert_condition <- if (!is.na(n_values[['n_cont']]) & n_values[['n_cont']]<1) 
         condition("model_precheck",n_values,"no observations for control group")
@@ -171,12 +170,20 @@ eregr_write_results_linear_models <- function (db_conn, study_Id, site_Id, ROI,r
 
             df_cohd <- df_cohd %>% select (lmID,sessionID,studyID,siteID,ROI,metric,vertex,var,cohens_d,cohens_se,cohens_low_ci,cohens_high_ci,cohens_pval)
 #            return (df_cohd)
-            lm_write_lm_stats <- dbWriteTable(db_conn, name = tbl_lm_cohd_res, value = df_cohd, append = TRUE)
-            l_write_lm_results <- dbWriteTable(db_conn, name = tbl_lmres, value = df_res, append = TRUE)
+            lm_write_lm_stats <- dbWriteTable(db_conn, name = tbl_lm_cohd_res, value = df_cohd, append=TRUE,row.names=FALSE)
+            l_write_lm_results <- dbWriteTable(db_conn, name = tbl_lmres, value = df_res, append=TRUE,row.names=FALSE)
 
         }
         else {
-            # 1. check that mainfactor is the same as 1st variable
+	    message("lm_mainfactor for pcor:")
+	    str(lm_mainfactor)
+	    message("length(res_models):")
+	    str(length(res_models))
+	    message("str(res_models[[1]]):")
+	    str(res_models[[1]])
+	    print(names(res_models[[1]][['model']]))
+           
+	    # 1. check that mainfactor is the same as 1st variable
             res_pcor <- map (res_models, function (x) {
 
                       pcor <- ppcor::pcor.test(x$model[,1],x$model[,2],x$model[,3:ncol(x$model)])
@@ -185,7 +192,7 @@ eregr_write_results_linear_models <- function (db_conn, study_Id, site_Id, ROI,r
 
                       corr_se <- summary(x)$coefficients[names(x[['model']])[[2]],2]
                       lm_mf_idx <- which(str_detect(names(x[['model']]),fixed(lm_mainfactor)))[[1]]
-                      var <- names(x)[[lm_mf_idx]]
+                      var <- names(x[['model']])[[lm_mf_idx]]
                       corr_res <- c(var,corr_val,corr_pval,corr_se)
                     
                       names(corr_res) <- c ("var","corr","corr_pval","corr_se")
@@ -199,8 +206,8 @@ eregr_write_results_linear_models <- function (db_conn, study_Id, site_Id, ROI,r
             df_pcor[['siteID']] <- site_Id
             df_pcor[['ROI']] <- ROI
             df_pcor <- df_pcor %>% select(lmID,sessionID,studyID,siteID,ROI,metric,vertex,var,corr,corr_pval,corr_se)
-            l_write_lm_stats <- dbWriteTable(db_conn,name = tbl_lm_corr,value = df_pcor, append = TRUE)
-            l_write_lm_results <- dbWriteTable(db_conn, name = tbl_lmres, value = df_res, append = TRUE)
+            l_write_lm_stats <- dbWriteTable(db_conn,name = tbl_lm_corr,value = df_pcor, append=TRUE,row.names=FALSE)
+            l_write_lm_results <- dbWriteTable(db_conn, name = tbl_lmres, value = df_res, append=TRUE,row.names=FALSE)
             
         }
         # think of the output
@@ -326,7 +333,6 @@ eregr_run_linear_models <- function (db_conn, study_Id, site_Id, ROI , excludeSu
         # spreading
         df_covar <- df_covar %>%
                 spread(key = cov_name, value = cov_value)
-        
         #tocheck with Neda and Boris - filtering for complete cases
         lmvars_plain <- intersect (var_list[['var']], names(df_covar))
         df_covar <- df_covar[complete.cases(df_covar[,lmvars_plain]),]
@@ -341,6 +347,7 @@ eregr_run_linear_models <- function (db_conn, study_Id, site_Id, ROI , excludeSu
                                             with(eval(parse(text=mutate_df[i,'formula'])))
         }
         
+
         #selecting
         try({   colNums <- match(var_list[['var']],names(df_covar))
                              df_covar <- df_covar %>%
@@ -348,29 +355,40 @@ eregr_run_linear_models <- function (db_conn, study_Id, site_Id, ROI , excludeSu
                                      drop_na()
                             
                             })
-        
+    
         lm_record <- eregr_get_lm_record(db_conn,study_Id, session_Id, lm_Id)
         lm_text <- lm_record[['lm_text']]
         lm_mainfactor <- lm_record[['main_factor']]
-        
-        main_factor <- str_match_all(lm_record[['main_factor']],"(factor)\\(([A-Za-z0-9]+)\\)")
-        if (length(main_factor)>1) 
-            stop("incorrect linear model parameter for main factor")
-        main_factor <- as.data.frame(main_factor[[1]])
-        if (nrow(main_factor)>1) { # it is nor factor nor continuous
-            assert_condition <- condition("model_precheck",main_factor,"main_factor consists of more than one factor variable")
-            stop(assert_condition)
-        }
-        else if (nrow(main_factor)==1) # it is 1 factor or factor:continuous interaction
-            main_factor <- main_factor[[3]]
  
-        
+	main_factor <- NA
+	if(is.na(lm_mainfactor) | is.null(lm_mainfactor) | lm_mainfactor=="")
+		main_factor <- NA
+	if (str_detect(lm_mainfactor,"factor")==TRUE) { #factor(...) or factor(...):var
+		str_match <- str_match_all(lm_mainfactor,"(factor)\\(([A-Za-z0-9]+)\\)")
+		factor <- as.data.frame(str_match[[1]])
+		if(nrow(factor)>1) {
+	            	assert_condition <- condition("model_precheck",factor,"main_factor consists of more than one factor variable")
+			stop(assert_condition)
+		}
+		else if (nrow(factor)==1) # it is 1 factor or factor:continuous interaction
+			#PotERR if we have only (factor) in main_factor text
+			main_factor <- as.character(factor[[3]])
+	}
+	else { #no "factor" in main_factor field
+		main_factor <- lm_mainfactor
+	}
+	message("main factor for model ",lm_Id)
+	str(main_factor)
         filter_text <- eregr_get_lm_filter(db_conn, study_Id, session_Id, lm_Id)
         #filtering
         if(!is.na(filter_text) & filter_text != "")
-            df_covar <- df_covar %>% 
-                            filter_(filter_text)
-        
+            df_covar <- tryCatch(df_covar %>% 
+                            filter_(filter_text),
+				error=function(e) {
+					message("error in filtering")
+					message(filter_text)
+					stop(e)
+				})
         #pre-check should go here
         #building pre-check structure
         mainfactor_exists <- TRUE
@@ -380,7 +398,7 @@ eregr_run_linear_models <- function (db_conn, study_Id, site_Id, ROI , excludeSu
         n_pat <- NA
         n_cont <- NA
         levels <- NA
-
+	
         if (is.na(lm_mainfactor) | lm_mainfactor=="") 
             mainfactor_exists <- FALSE
         else if (str_detect(lm_mainfactor,"factor")==TRUE) {
@@ -411,7 +429,6 @@ eregr_run_linear_models <- function (db_conn, study_Id, site_Id, ROI , excludeSu
             
         #precheck - either no main_factor or factor(main_factor) or partcor - then there should be no factors in model
         # or no mainfactor at all
-        
         #assert pre-check conditions
         eregr_assert_model_precheck(n_value)
         message("Running model: ",lm_Id)
@@ -430,9 +447,13 @@ eregr_run_linear_models <- function (db_conn, study_Id, site_Id, ROI , excludeSu
         df_vert <- as.integer(df_metrvert[[2]])
         
         res <- list()
+	message("lengths:")
+	str(length(df_metr))
+	str(length(df_vert))
+	str(length(df_list))
         res[['lmres']] <- pmap(list(metr_text=df_metr,vert_text=df_vert, df_data = df_list),eval_lm_metrvert, lm_text = lm_text, var_list = var_list)
         res[['precheck']]<-n_value
-        res[['main_factor']] <- lm_mainfactor
+        res[['main_factor']] <- main_factor
         res[['sessionID']] <- session_Id
         #post-check goes here
         model_vars <- var_list %>% filter (modifier != "filter")
@@ -508,7 +529,7 @@ eregr_read_metrics_data_byROI <- function (db_conn, study_Id, site_Id, ROI,
         rec_data[1:n_vert,'vertex'] <- vertex
         rec_data[1:n_vert,'value'] <- value
         rec_data
-#        l_write_shape_data <- dbWriteTable(db_conn, name = data_tblname, value = rec_data, append = TRUE)
+#        l_write_shape_data <- dbWriteTable(db_conn, name = data_tblname, value = rec_data, append=TRUE,row.names=FALSE)
 #        return (l_write_shape_data)
         
     }
@@ -577,12 +598,16 @@ eregr_get_lm_filter <- function (db_conn, study_Id, session_Id, lm_Id, tbl_filte
 }
 
 #connect to database routine
-eregr_connect <- function (db_path,db_class=RSQLite::SQLite()) {
+eregr_connect <- function (db_path,db_class=RSQLite::SQLite(),user=NA,password=NA,dbname=NA,host=NA,port=NA) {
     #checking for existence of SQLite database:
-    if (class(db_class)==class(RSQLite::SQLite()))
+    if (class(db_class)==class(RSQLite::SQLite())) {
 	if (!file.exists(db_path))
 		stop(paste("File ",db_path," does not exist. Cannot connect to a database",sep=""))
-    return (dbConnect(db_class,db_path)) 
+        return (dbConnect(db_class,db_path)) 
+    }
+    else if(class(db_class)==class(RMySQL::MySQL())) {
+	return(dbConnect(db_class,user = user, password = password, dbname = dbname, host = host, port = port))
+    }
 }
 
 eregr_disconnect <- function(db_conn) 
@@ -639,12 +664,12 @@ eregr_register_study <- function (db_conn,study_Id, study_Name, gsheet_path, stu
     rec_study[1,'study_data_format'] <- rec_model[['study_data_format']]
     rec_study[1,'study_gDoc_path'] <- gsheet_path
     #writing to database
-    l_studies_write <- dbWriteTable(db_conn,name = study_tblname, value = rec_study, append=TRUE)
+    l_studies_write <- dbWriteTable(db_conn,name = study_tblname, value = rec_study, append=TRUE, row.names = FALSE)
 				
     if (!l_studies_write) {
 	stop("could not write a study to 'studies' table: ",study_Id,"\n")
     }
-    l_st_metrics_write <- tryCatch(dbWriteTable(db_conn,name = study_metr_tblname, value = rec_study_metrics, append=TRUE),
+    l_st_metrics_write <- tryCatch(dbWriteTable(db_conn,name = study_metr_tblname, value = rec_study_metrics, append=TRUE, row.names = FALSE),
 				   error = function(e) FALSE)
     if (!l_st_metrics_write) {
 	stop("could not write metrics information  into metrics table. Study: ", study_Id)
@@ -674,7 +699,7 @@ eregr_register_site <- function (db_conn,study_Id,site_Id,study_tblname="studies
     rec_site[1,] <- c("","")
     rec_site$studyID[1] <- study_Id
     rec_site$siteID[1] <- site_Id
-    l_site_write <- tryCatch(dbWriteTable(db_conn,name=site_tblname,value=rec_site,append=TRUE),
+    l_site_write <- tryCatch(dbWriteTable(db_conn,name=site_tblname,value=rec_site,append=TRUE,row.names=FALSE),
 			     error = function(e) {message(e);FALSE})
     if (!l_site_write) stop ("couldn't site information to database: \t", site_Id)
     return (l_site_write)
@@ -696,7 +721,7 @@ eregr_int_register_session_lm <- function(db_conn,study_Id,site_Id,session_tblna
     rec_session[1,'siteID'] <- site_Id
     rec_session[1,'timestamp'] <-id_and_time[[1]]
     
-    l_session_write <- dbWriteTable(db_conn,name=session_tblname,value=rec_session,append=TRUE)
+    l_session_write <- dbWriteTable(db_conn,name=session_tblname,value=rec_session,append=TRUE,row.names=FALSE)
     if(l_session_write != FALSE)
         return (id_and_time[[2]])
     else
@@ -774,8 +799,7 @@ eregr_int_register_lm <- function (db_conn, lm_Id, session_Id, study_Id, gs_data
         #writing variables to table 'lm_variables'
         rec_lm_vars <- rec_lm_vars %>% 
                             drop_na()
-        l_var_write <-  dbWriteTable(db_conn,name=vars_tblname,value=rec_lm_vars,append=TRUE)    
-
+	l_var_write <-  dbWriteTable(db_conn,name=vars_tblname,value=rec_lm_vars,append=TRUE,row.names=FALSE)    
 
         #preparing to write interactions to table 'lm_interactions'
         rec_lm_inter <- tbl_inter[0,]
@@ -788,7 +812,7 @@ eregr_int_register_lm <- function (db_conn, lm_Id, session_Id, study_Id, gs_data
             rec_lm_inter[i,'var2'] <- interactions$var2[i]
         }
         #writing interactions to table 'lm_interactions'
-        l_inter_write <-  dbWriteTable(db_conn,name=inter_tblname,value=rec_lm_inter,append=TRUE)    
+        l_inter_write <-  dbWriteTable(db_conn,name=inter_tblname,value=rec_lm_inter,append=TRUE,row.names=FALSE)    
         return (if (l_inter_write & l_var_write) rec_lm_vars else rec_lm_vars[0,])
     }
             
@@ -823,7 +847,7 @@ eregr_int_register_lm <- function (db_conn, lm_Id, session_Id, study_Id, gs_data
             rec_var[i,'sessionID'] <- session_Id
             rec_var[i,'studyID'] <- study_Id
         }
-        dbWriteTable(db_conn, name = vars_tblname, value = rec_var, append = TRUE)
+        dbWriteTable(db_conn, name = vars_tblname, value = rec_var, append=TRUE,row.names=FALSE)
 
         rec_filter <- tbl_filters[0,]
         rec_filter[1,]=vector("character",ncol(tbl_filters))
@@ -833,7 +857,7 @@ eregr_int_register_lm <- function (db_conn, lm_Id, session_Id, study_Id, gs_data
         rec_filter$filter_1 <- filter1
         rec_filter$filter_2 <- filter2
         rec_filter$filter_full <- filter_full
-        l_filter_write <- dbWriteTable(db_conn,name = filter_tblname,value = rec_filter,append = TRUE)
+        l_filter_write <- dbWriteTable(db_conn,name = filter_tblname,value = rec_filter,append=TRUE,row.names=FALSE)
         return (l_filter_write)
     }
             
@@ -873,7 +897,7 @@ eregr_int_register_lm <- function (db_conn, lm_Id, session_Id, study_Id, gs_data
             rec_mutate[i,'studyID'] <- study_Id
             rec_mutate[i,'sessionID'] <- session_Id
         }
-        l_mutate_write <- dbWriteTable(db_conn, name = mutate_tblname, value = rec_mutate, append = TRUE)
+        l_mutate_write <- dbWriteTable(db_conn, name = mutate_tblname, value = rec_mutate, append=TRUE,row.names=FALSE)
     }
 
 #    gsheet_lm <- gsheet_lm_path %>%
@@ -904,15 +928,15 @@ eregr_int_register_lm <- function (db_conn, lm_Id, session_Id, study_Id, gs_data
     rec_lm$pat_min <- gs_lm$PatMin
     rec_lm$comments <- gs_lm$Comments    
     
-    rec_vars <- register_vars_lm()
-    if (nrow(rec_vars) == 0) return (FALSE)
+    l_lm_write <- dbWriteTable(db_conn,name=lm_tblname,value=rec_lm,append=TRUE,row.names=FALSE)    
     
+    rec_vars <- register_vars_lm()
+    if (nrow(rec_vars) == 0) stop(paste("Could not register variables for model ", lm_Id,sep=""))
     rec_filter <- register_filter_lm()
-    if (rec_filter == FALSE) return (FALSE)
+    if (rec_filter == FALSE) stop(paste("Could not register filters for model ", lm_Id, sep=""))
     
     rec_mutate <- register_mutate_lm()
-    if (rec_mutate == FALSE) return (FALSE)
-    l_lm_write <- dbWriteTable(db_conn,name=lm_tblname,value=rec_lm,append=TRUE)    
+    if (rec_mutate == FALSE) stop(paste("Could not register new regressors for model ", lm_Id, sep=""))
 
     return (l_lm_write)
 }
@@ -933,6 +957,7 @@ eregr_read_shape_all_subjects <- function (db_conn, data_dir, subj_list, roi_lis
     }
     if (rewrite)
         erase_site_data()
+
     exclude_subj<-data.frame()
     if (exclude_subj_file != "") {
         exclude_subj <- read.csv(exclude_subj_file,stringsAsFactors = FALSE)
@@ -944,12 +969,12 @@ eregr_read_shape_all_subjects <- function (db_conn, data_dir, subj_list, roi_lis
                                 select (subjID, ROI, QC)
         exclude_subj[['ROI']]<-str_replace(exclude_subj[['ROI']],"ROI","")
     }
-        
     ses_metr_ID<-eregr_int_register_session_loadmetr(db_conn)
     res<-map(subj_list,~eregr_read_shape_one_subject(db_conn,data_dir,roi_list,metrics_list,study_Id,.,site_Id,ses_metr_ID, rewrite = rewrite) )
-    
     #remove all empty results (those that finished correctly)
-    res <- res[sapply(res,length)>0] 
+    res <- res[sapply(res,length)>0]
+    if(length(res)==0) return(TRUE)
+    #if there is subjects to exclude - continue and write it to database
     res <- do.call("rbind",res)
     res <- res %>% 
                select(subjID,roi_list) %>%
@@ -964,7 +989,7 @@ eregr_read_shape_all_subjects <- function (db_conn, data_dir, subj_list, roi_lis
     exclude_subj[['siteID']] <- site_Id
     exclude_subj[['session_metr_ID']] <- ses_metr_ID
     exclude_subj <- exclude_subj %>% select(siteID,studyID,subjID,ROI,QC,session_metr_ID)
-    l_read_all_subj <- dbWriteTable(db_conn,name = exclude_subj_tblname, value = exclude_subj, append = TRUE)
+    l_read_all_subj <- dbWriteTable(db_conn,name = exclude_subj_tblname, value = exclude_subj, append=TRUE,row.names=FALSE)
     l_read_all_subj
 }
 
@@ -980,7 +1005,7 @@ eregr_int_register_session_loadmetr <- function(db_conn,session_tblname="session
     rec_session_metr$session_metr_ID[[1]] <- id_and_time[[2]]
     rec_session_metr$timestamp[[1]] <-id_and_time[[1]]
     
-    l_session_write <- dbWriteTable(db_conn,name=session_tblname,value=rec_session_metr,append=TRUE)
+    l_session_write <- dbWriteTable(db_conn,name=session_tblname,value=rec_session_metr,append=TRUE,row.names=FALSE)
     if(l_session_write != FALSE)
         return (id_and_time[[2]])
     else
@@ -1077,7 +1102,7 @@ eregr_int_register_covar_session <- function (db_conn, study_Id, site_Id, cov_fi
             rec_covar_session[1,'file_lastedit'] <- file.info(cov_file_path)['mtime']
         rec_covar_session[1,'file_cov_path'] <- cov_file_path
         l_write_covar_session <- dbWriteTable(db_conn, name = tbl_sess_covariates, 
-                                              value = rec_covar_session, append = TRUE)
+                                              value = rec_covar_session, append=TRUE,row.names=FALSE)
         
         if (l_write_covar_session) 
             return (time_and_id[[2]]) 
@@ -1141,7 +1166,7 @@ eregr_register_covariates <- function (db_conn, study_Id, site_Id, cov_file_path
     rec_tbl_cov[1:nrow(cov_gathered),'cov_name'] <-cov_gathered$cov_name
     rec_tbl_cov[1:nrow(cov_gathered),'cov_value'] <-cov_gathered$cov_value
     rec_tbl_cov[1:nrow(cov_gathered),'session_covar_ID'] <- rep(cov_sess_ID,nrow(cov_gathered))
-    l_tbl_cov_write <- dbWriteTable(db_conn, name = tbl_covariates, value = rec_tbl_cov, append = TRUE)
+    l_tbl_cov_write <- dbWriteTable(db_conn, name = tbl_covariates, value = rec_tbl_cov, append=TRUE,row.names=FALSE)
     if (l_tbl_cov_write) return (rec_tbl_cov) else stop("Could not write covariates data to the database table")
 }
 
@@ -1187,7 +1212,7 @@ eregr_set_covariates <- function (db_conn, study_Id, site_Id, cov_data,
     if(eregr_int_exists_covars(db_conn, study_Id, site_Id, tbl_covariates)>0) 
         eregr_int_erase_covars(db_conn, study_Id, site_Id, tbl_covariates)
 
-    l_set_covars <- dbWriteTable(db_conn,name = tbl_covariates,value = cov_data, append = TRUE)
+    l_set_covars <- dbWriteTable(db_conn,name = tbl_covariates,value = cov_data, append=TRUE,row.names=FALSE)
     return (l_set_covars)
 }
 eregr_export_covariates <- function (db_conn, study_Id, site_Id, output_path,tbl_covariates = "covariates_general") {

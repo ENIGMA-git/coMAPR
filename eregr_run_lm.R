@@ -38,8 +38,10 @@ sessionInfo()
 
 # Connect to db
 message("2. Connecting to database")
-con <- eregr_connect(db_path)
+#con <- eregr_connect(db_path)
 
+# now it's configured for only one database, I'll fix that later
+con <- eregr_connect("db_mysql",RMySQL::MySQL(),user='eregr',password='eregr',dbname='apr7demo',host='127.0.0.1',port=3306)
 
 
 

@@ -50,7 +50,9 @@ sessionInfo()
 
 # Connect to db
 message("2. Connecting to database")
-con <- eregr_connect(db_path)
+#now it's configured for only one database, I'll fix that later
+con <- eregr_connect("db_mysql",RMySQL::MySQL(),user='eregr',password='eregr',dbname='apr7demo',host='127.0.0.1',port=3306)
+#con <- eregr_connect(db_path)
 
 message("3. Registering study")
 is_study_reg <- tryCatch(eregr_register_study(con,study_Id = study_Id, study_Name = '',gsheet_path = config_path),
@@ -95,6 +97,8 @@ is_metr_read <- tryCatch(eregr_read_shape_all_subjects(con,metr_folder, subj_lis
 		})
 message("Metrics files registered successfully")
 message("7. Disconnecting from database")
+
+is_disconnected <- eregr_disconnect(con)
 
 message("Disconnected succesfully")
 message("Finished successfully")
