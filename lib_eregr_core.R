@@ -80,11 +80,13 @@ eregr_assert_model_precheck <- function(n_values) {
 #---end error handling
 
 eregr_write_results_linear_models <- function (db_conn, study_Id, site_Id, ROI,res_list) {
-    eregr_int_write_results_one_linear_model <- function (db_conn, study_Id, site_Id, ROI, lm_name, lm_mainfactor, lm_res, 
+    eregr_int_write_results_one_linear_model <- function (db_conn, study_Id, site_Id, ROI, lm_name, lm_mainfactor, lm_res,
+                                                            res_sessionID,
                                                           tbl_lmres = "lm_results",
                                                          tbl_lm_cohd_res = "lm_cohend_results",
                                                           tbl_lm_corr = "lm_corr_results",
-                                                          tbl_lmvars = "lm_variables") {
+                                                          tbl_lmvars = "lm_variables",
+                                                          tbl_lm_res_keys="lm_results_keys") {
 
         
         # check if NULL
@@ -97,7 +99,7 @@ eregr_write_results_linear_models <- function (db_conn, study_Id, site_Id, ROI,r
         lm_record <- eregr_get_lm_record(db_conn,study_Id,lm_res[['sessionID']], lm_name)
         lm_mainfactor <- lm_record[['main_factor']]
         
-	lm_ses_Id <- lm_res[['sessionID']]
+        lm_ses_Id <- lm_res[['sessionID']]
         res_coef <- map(res_models, ~ coef(summary(.))[,1])
         res_sterr<- map(res_models, ~ coef(summary(.))[,2])
         res_pbeta <- map(res_models, ~ coef(summary(.))[,4])
@@ -110,6 +112,9 @@ eregr_write_results_linear_models <- function (db_conn, study_Id, site_Id, ROI,r
         
         df_metr <- as.data.frame (do.call("rbind",res_models_tp[['metric']]))
         names(df_metr) <- 'metric'
+#explicitly set metrics to be character
+        df_metr[[1]] <- as.character(df_metr[[1]])
+            
         df_vert <- as.data.frame (do.call("rbind",res_models_tp[['vertex']]))
         names(df_vert) <- 'vertex'
         
@@ -134,7 +139,31 @@ eregr_write_results_linear_models <- function (db_conn, study_Id, site_Id, ROI,r
         df_res[['siteID']] <- site_Id
         df_res[['ROI']] <- ROI
         
-        df_res <- df_res %>% select(lmID,sessionID,studyID,siteID,ROI,metric,vertex,var,beta,sterr,p_beta) 
+        df_res <- df_res %>% select(lmID,sessionID,studyID,siteID,ROI,metric,vertex,var,beta,sterr,p_beta)
+# extract and write keys into lm_results_keys table
+        df_toreg_keys <- df_res %>% 
+                        select(lmID,sessionID,studyID,metric,ROI) %>% 
+                            distinct()
+        metr_ul <- df_res %>%
+                        select(metric) %>%
+                            unlist()
+
+       l_write_keys <- dbWriteTable(db_conn, name = tbl_lm_res_keys, value = cbind(data.frame(res_keyID=NA),df_toreg_keys,data.frame(result_sessionID=res_sessionID)), append=TRUE,row.names=FALSE)
+       if (l_write_keys == FALSE)
+           stop(simpleError("could not write keys into lm_results_keys table"))
+       query <- sprintf("SELECT * FROM %s WHERE result_sessionID='%s' AND lmID='%s' AND sessionID='%s' AND studyID='%s' AND  ROI='%s'",tbl_lm_res_keys,res_sessionID, lm_name,lm_ses_Id,study_Id,ROI);
+       message("QUERY: ", query)
+       df_reg_keys <- dbGetQuery(db_conn, query)
+       message("Names(df_reg_keys): ", names(df_reg_keys))
+       message("Nrow(df_res) - before join ", nrow(df_res))
+       message("Nrow(df_reg_keys) ", nrow (df_reg_keys))
+     
+       df_res <- df_res %>% 
+                    left_join(df_reg_keys, by=c("lmID","sessionID","studyID","ROI","metric")) %>%
+                        select(res_keyID,vertex,var,beta,sterr,p_beta)
+
+# join with new keys and remove redundant columns
+            
 #        df_demog <- data.frame (lmID = lm_name, sessionID = lm_ses_Id, studyID = study_Id, 
         l_write_lm_stats <- FALSE
         l_write_lm_results <- FALSE
@@ -170,12 +199,16 @@ eregr_write_results_linear_models <- function (db_conn, study_Id, site_Id, ROI,r
             df_cohd[['studyID']] <- study_Id
             df_cohd[['siteID']] <- site_Id
             df_cohd[['ROI']] <- ROI
-
-            df_cohd <- df_cohd %>% select (lmID,sessionID,studyID,siteID,ROI,metric,vertex,var,cohens_d,cohens_se,cohens_low_ci,cohens_high_ci,cohens_pval)
+            
+            df_cohd <- df_cohd %>%
+                            left_join(df_reg_keys,by=c("lmID","sessionID","studyID","ROI","metric")) %>% 
+                                select (res_keyID,vertex,var,cohens_d,cohens_se,cohens_low_ci,cohens_high_ci,cohens_pval)
+            message("Names(df_cohd): ", paste(names(df_cohd),collapse=", "))
+            message("Nrow(df_cohd): ", nrow(df_cohd))
 #            return (df_cohd)
-            lm_write_lm_stats <- dbWriteTable(db_conn, name = tbl_lm_cohd_res, value = df_cohd, append=TRUE,row.names=FALSE)
+            l_write_lm_stats <- dbWriteTable(db_conn, name = tbl_lm_cohd_res, value = df_cohd, append=TRUE,row.names=FALSE)
             l_write_lm_results <- dbWriteTable(db_conn, name = tbl_lmres, value = df_res, append=TRUE,row.names=FALSE)
-
+            
         }
         else {
            
@@ -201,19 +234,27 @@ eregr_write_results_linear_models <- function (db_conn, study_Id, site_Id, ROI,r
             df_pcor[['studyID']] <- study_Id
             df_pcor[['siteID']] <- site_Id
             df_pcor[['ROI']] <- ROI
-            df_pcor <- df_pcor %>% select(lmID,sessionID,studyID,siteID,ROI,metric,vertex,var,corr,corr_pval,corr_se)
+            df_pcor <- df_pcor %>% 
+                            left_join(df_reg_keys,by=c("lmID","sessionID","studyID","ROI","metric")) %>% 
+                                select(res_keyID,vertex,var,corr,corr_pval,corr_se)
             l_write_lm_stats <- dbWriteTable(db_conn,name = tbl_lm_corr,value = df_pcor, append=TRUE,row.names=FALSE)
             l_write_lm_results <- dbWriteTable(db_conn, name = tbl_lmres, value = df_res, append=TRUE,row.names=FALSE)
             
         }
+        message("output lm_results: ", l_write_lm_results)
+        message("output lm_stats: ", l_write_lm_stats)
         # think of the output
         l_write_lm_results & l_write_lm_stats
     }
     res_list_tp <- transpose(res_list)
     model_res <- res_list_tp[['result']]
     lm_names <- names(res_list)
+        
+    res_id_and_time <- eregr_int_get_unique_time_id()
+    res_sessionID <- res_id_and_time[[2]]
+       #temporarily removed 'safely'
     pmap(list(lm_name=lm_names, lm_res = model_res), safely(eregr_int_write_results_one_linear_model), 
-         db_conn = db_conn, study_Id = study_Id, site_Id = site_Id, ROI = ROI)
+         db_conn = db_conn, study_Id = study_Id, site_Id = site_Id, ROI = ROI, res_sessionID = res_sessionID)
     
 }
 
