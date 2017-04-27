@@ -93,8 +93,11 @@ eregr_write_results_linear_models <- function (db_conn, study_Id, site_Id, ROI,r
         # process main lm_results table
         res_demog <- lm_res[['precheck']]
         res_models <- lm_res[['lmres']]
-        lm_mainfactor <- lm_res[['main_factor']]
-        lm_ses_Id <- lm_res[['sessionID']]
+
+        lm_record <- eregr_get_lm_record(db_conn,study_Id,lm_res[['sessionID']], lm_name)
+        lm_mainfactor <- lm_record[['main_factor']]
+        
+	lm_ses_Id <- lm_res[['sessionID']]
         res_coef <- map(res_models, ~ coef(summary(.))[,1])
         res_sterr<- map(res_models, ~ coef(summary(.))[,2])
         res_pbeta <- map(res_models, ~ coef(summary(.))[,4])
@@ -175,13 +178,6 @@ eregr_write_results_linear_models <- function (db_conn, study_Id, site_Id, ROI,r
 
         }
         else {
-	    message("lm_mainfactor for pcor:")
-	    str(lm_mainfactor)
-	    message("length(res_models):")
-	    str(length(res_models))
-	    message("str(res_models[[1]]):")
-	    str(res_models[[1]])
-	    print(names(res_models[[1]][['model']]))
            
 	    # 1. check that mainfactor is the same as 1st variable
             res_pcor <- map (res_models, function (x) {
@@ -377,8 +373,6 @@ eregr_run_linear_models <- function (db_conn, study_Id, site_Id, ROI , excludeSu
 	else { #no "factor" in main_factor field
 		main_factor <- lm_mainfactor
 	}
-	message("main factor for model ",lm_Id)
-	str(main_factor)
         filter_text <- eregr_get_lm_filter(db_conn, study_Id, session_Id, lm_Id)
         #filtering
         if(!is.na(filter_text) & filter_text != "")
@@ -447,10 +441,6 @@ eregr_run_linear_models <- function (db_conn, study_Id, site_Id, ROI , excludeSu
         df_vert <- as.integer(df_metrvert[[2]])
         
         res <- list()
-	message("lengths:")
-	str(length(df_metr))
-	str(length(df_vert))
-	str(length(df_list))
         res[['lmres']] <- pmap(list(metr_text=df_metr,vert_text=df_vert, df_data = df_list),eval_lm_metrvert, lm_text = lm_text, var_list = var_list)
         res[['precheck']]<-n_value
         res[['main_factor']] <- main_factor
