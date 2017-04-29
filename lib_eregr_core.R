@@ -517,7 +517,13 @@ eregr_run_linear_models <- function (db_conn, study_Id, site_Id, ROI , excludeSu
         df_covar <- df_covar %>% 
                         filter(!(subjID %in% unlist(excludeSubj)))
     #5. get metrics data
-    metr_data <- eregr_read_metrics_data_byROI(db_conn,study_Id, site_Id, ROI)
+    metr_data <- switch(study_info[['study_data_format']],
+                        'raw'=eregr_read_metrics_data_byROI(db_conn,study_Id, site_Id, ROI),
+                        'csv'=eregr_get_metrics_data_byROI(db_conn,study_Id, site_Id, ROI))
+    message("nrow(metr_data): ", nrow(metr_data))
+#        if(study_info[['study_data_format']]=='raw')
+#        metr_data <- eregr_read_metrics_data_byROI(db_conn,study_Id, site_Id, ROI)
+    
     #6. map for all active linear models
     lm_Id_list <- eregr_get_lm_ID(db_conn, study_Id, session_Id)
     res <- map (lm_Id_list, safely(run_model),df_covar = df_covar,metr_data = metr_data)
@@ -527,9 +533,13 @@ eregr_run_linear_models <- function (db_conn, study_Id, site_Id, ROI , excludeSu
 
 
 
-eregr_get_metrics_data_byROI <- function (db_conn, study_Id, site_Id, ROI, tbl_metrics_data="metrics_data") {
-    query <- sprintf("SELECT * FROM %s WHERE studyID='%s' AND siteID='%s' AND ROI = '%s'",
-                    tbl_metrics_data,study_Id,site_Id,ROI)
+eregr_get_metrics_data_byROI <- function (db_conn, study_Id, site_Id, ROI, 
+                                             tbl_metrics_data="metrics_data", tbl_sess_metrics="session_loadMetrics", tbl_sites_in_study="sites_in_study") {
+    query <- sprintf("SELECT * 
+                        FROM %s INNER JOIN %s USING (session_metr_ID) 
+                        INNER JOIN %s USING (study_site_ID)
+                        WHERE studyID='%s' AND siteID='%s' AND ROI = '%s'",
+                    tbl_metrics_data, tbl_sess_metrics, tbl_sites_in_study,study_Id,site_Id,ROI)
     res <- dbGetQuery(db_conn,query)
     res
 }
@@ -725,11 +735,10 @@ eregr_register_site <- function (db_conn,study_Id,site_Id,study_tblname="studies
     if(study_exist$n!=1) stop("study ", study_Id, " does not exist in studies table")
     
     #append a new row to a sites table
-    tbl_sites <- dbReadTable(db_conn,name=site_tblname)
-    rec_site <- tbl_sites[0,]
-    rec_site[1,] <- c("","")
-    rec_site$studyID[1] <- study_Id
-    rec_site$siteID[1] <- site_Id
+    rec_site <- eregr_int_get_tbl_header(db_conn, site_tblname)
+    rec_site[1,'studyID'] <- study_Id
+    rec_site[1,'siteID'] <- site_Id
+    rec_site[1,'study_site_ID'] <- NA #setting NA explicitly for auto-increment
     l_site_write <- tryCatch(dbWriteTable(db_conn,name=site_tblname,value=rec_site,append=TRUE,row.names=FALSE),
 			     error = function(e) {message(e);FALSE})
     if (!l_site_write) stop ("couldn't site information to database: \t", site_Id)
@@ -1000,7 +1009,7 @@ eregr_read_shape_all_subjects <- function (db_conn, data_dir, subj_list, roi_lis
                                 select (subjID, ROI, QC)
         exclude_subj[['ROI']]<-str_replace(exclude_subj[['ROI']],"ROI","")
     }
-    ses_metr_ID<-eregr_int_register_session_loadmetr(db_conn)
+    ses_metr_ID<-eregr_int_register_session_loadmetr(db_conn,study_Id,site_Id)
     res<-map(subj_list,~eregr_read_shape_one_subject(db_conn,data_dir,roi_list,metrics_list,study_Id,.,site_Id,ses_metr_ID, rewrite = rewrite) )
     #remove all empty results (those that finished correctly)
     res <- res[sapply(res,length)>0]
@@ -1026,16 +1035,21 @@ eregr_read_shape_all_subjects <- function (db_conn, data_dir, subj_list, roi_lis
 
 # this section will be devoted to metrics loading
 
-eregr_int_register_session_loadmetr <- function(db_conn,session_tblname="session_loadMetrics") {
+eregr_int_register_session_loadmetr <- function(db_conn,study_Id,site_Id,session_tblname="session_loadMetrics",tbl_sites_in_study="sites_in_study") {
+    
+    query=sprintf("SELECT * FROM %s WHERE siteID='%s' AND studyID='%s'",
+                   tbl_sites_in_study,site_Id,study_Id);
+    rec_sites_in_study <- dbGetQuery(db_conn,query)
     
     id_and_time <- eregr_int_get_unique_time_id()
-    tbl_session_metrics <- dbReadTable(db_conn,name=session_tblname)
-    rec_session_metr <- tbl_session_metrics[0,]
-
-    rec_session_metr[1,] <- c("","")
-    rec_session_metr$session_metr_ID[[1]] <- id_and_time[[2]]
-    rec_session_metr$timestamp[[1]] <-id_and_time[[1]]
-    
+    rec_session_metr <- eregr_int_get_tbl_header(db_conn,session_tblname)
+    rec_session_metr[1,'session_metr_ID'] <- id_and_time[[2]]
+    rec_session_metr[1,'timestamp'] <-id_and_time[[1]]
+    if(nrow(rec_sites_in_study)==0)
+        stop (simpleError("Site is not registered for the study"))
+    else if (nrow(rec_sites_in_study)>1) 
+        stop(simpleError("multiple rows for site and study. Database inconsistency"))
+    rec_session_metr[1,'study_site_ID'] <- rec_sites_in_study[['study_site_ID']]
     l_session_write <- dbWriteTable(db_conn,name=session_tblname,value=rec_session_metr,append=TRUE,row.names=FALSE)
     if(l_session_write != FALSE)
         return (id_and_time[[2]])
@@ -1105,20 +1119,30 @@ eregr_read_shape_one_subject <- function(db_conn, data_dir, roi_list, metrics_li
 }
 
 eregr_int_exists_covars <- function (db_conn, study_Id, site_Id, 
-                                       tbl_covariates = "covariates_general") {
-    query <- sprintf("SELECT studyID,siteID FROM %s WHERE studyID='%s' AND siteID='%s'",
-                    tbl_covariates,study_Id,site_Id)
+                                       tbl_covariates = "covariates_general", tbl_sites_in_study="sites_in_study",
+                                        tbl_session_cov ="session_covariates") {
+    query <- sprintf("SELECT *
+                        FROM %s LEFT JOIN %s USING (study_site_ID)
+                        INNER JOIN %s USING (session_covar_ID)
+                        WHERE siteID='%s' AND studyID='%s'",
+                        tbl_sites_in_study,tbl_session_cov,tbl_covariates, site_Id,S_ID)
+    
     tbl_metrdata_record <- dbGetQuery(db_conn,query)
     return (nrow(tbl_metrdata_record))
 }
 eregr_int_erase_covars <- function (db_conn, study_Id, site_Id, 
-                                       tbl_covariates = "covariates_general") {
-    query <- sprintf("DELETE FROM %s WHERE studyID='%s' AND siteID='%s'",
-                    tbl_covariates,study_Id,site_Id)
+                                       tbl_covariates = "covariates_general",tbl_session_cov="session_covariates",
+                                       tbl_sites_in_study="sites_in_study") {
+    
+    query <- sprintf("DELETE FROM %s WHERE session_covar_ID IN 
+                        (SELECT session_covar_ID
+                            FROM %s INNER JOIN %s USING (study_site_ID)
+                            WHERE siteID='%s' AND studyID='%s')",tbl_covariates,tbl_session_cov, tbl_sites_in_study,site_Id, study_Id)
+
     dbExecute(con,query)
 }
 eregr_int_register_covar_session <- function (db_conn, study_Id, site_Id, cov_file_path, 
-                                       tbl_sess_covariates = "session_covariates") {
+                                       tbl_sess_covariates = "session_covariates", tbl_sites_in_study="sites_in_study") {
         
         rec_covar_session <- eregr_int_get_tbl_header(db_conn, tblname = tbl_sess_covariates)
         time_and_id <- eregr_int_get_unique_time_id()
@@ -1132,6 +1156,16 @@ eregr_int_register_covar_session <- function (db_conn, study_Id, site_Id, cov_fi
         else
             rec_covar_session[1,'file_lastedit'] <- file.info(cov_file_path)['mtime']
         rec_covar_session[1,'file_cov_path'] <- cov_file_path
+                
+        query = sprintf("SELECT * FROM %s WHERE siteID='%s' AND studyID='%s'",tbl_sites_in_study,
+                            site_Id, study_Id);
+        rec_sites_in_study <- dbGetQuery(db_conn,query);
+        if(nrow(rec_sites_in_study)==0)
+            stop (simpleError("Site is not registered for the study"))
+        else if (nrow(rec_sites_in_study)>1) 
+            stop(simpleError("multiple rows for site and study. Database inconsistency"))
+        
+        rec_covar_session[1,'study_site_ID'] <- rec_sites_in_study[['study_site_ID']] 
         l_write_covar_session <- dbWriteTable(db_conn, name = tbl_sess_covariates, 
                                               value = rec_covar_session, append=TRUE,row.names=FALSE)
         
@@ -1143,9 +1177,7 @@ eregr_int_register_covar_session <- function (db_conn, study_Id, site_Id, cov_fi
         }
     }
 
-eregr_register_covariates <- function (db_conn, study_Id, site_Id, cov_file_path, 
-                                       tbl_covariates = "covariates_general", tbl_sess_covariates = "session_covariates") {
-    read_covariates <- function () {
+    eregr_int_read_covariates <- function (cov_file_path) {
         cov_data <- read.csv(cov_file_path,dec = ".", sep=",", stringsAsFactors = FALSE)
         for (i in seq_along(cov_data)) {
             if (colnames(cov_data)[[i]]=="SubjID") next
@@ -1155,10 +1187,12 @@ eregr_register_covariates <- function (db_conn, study_Id, site_Id, cov_file_path
                     },
                     warning = function(w) {
                         message ("Warning: possible problems with conversion of data to numeric. Please check your data.")
-                        rep(c("NULL"),nrow(cov_data))
+                        as.numeric(cov_data[,i])
+#                        rep(c("NULL"),nrow(cov_data))
                     },
                     error = function(e) {
                         message ("Error: possible problems with conversion of data to numeric. Please check your data.")
+                        message(e)
                         rep(c("NULL"),nrow(cov_data))
                 },
                     finally = {
@@ -1174,16 +1208,22 @@ eregr_register_covariates <- function (db_conn, study_Id, site_Id, cov_file_path
         return (cov_data)
     }
 
+            
+eregr_register_covariates <- function (db_conn, study_Id, site_Id, cov_file_path, 
+                                       tbl_covariates = "covariates_general", tbl_sess_covariates = "session_covariates") {
+
     
     
-    cov <- read_covariates()
+    cov <- eregr_int_read_covariates(cov_file_path)
     if (nrow(cov)<1) stop("Could not read covariates")
+
+    if(eregr_int_exists_covars(db_conn, study_Id, site_Id, tbl_covariates)>0) 
+        eregr_int_erase_covars (db_conn, study_Id, site_Id, tbl_covariates)
 
     cov_sess_ID <- eregr_int_register_covar_session (db_conn, study_Id, site_Id, cov_file_path, 
                                        tbl_sess_covariates)
     if (cov_sess_ID == FALSE) stop ("Could not register session for covariates")
-    if(eregr_int_exists_covars(db_conn, study_Id, site_Id, tbl_covariates)>0) 
-        eregr_int_erase_covars (db_conn, study_Id, site_Id, tbl_covariates)
+     
     #edit - it should be data frame with zero rows.
     
     rec_tbl_cov <- eregr_int_get_tbl_header(db_conn, tblname = tbl_covariates)
@@ -1192,8 +1232,8 @@ eregr_register_covariates <- function (db_conn, study_Id, site_Id, cov_file_path
     cov_gathered <- cov_gathered %>%
                         rename(subjID = SubjID)
     rec_tbl_cov[1:nrow(cov_gathered),'subjID'] <- cov_gathered$subjID
-    rec_tbl_cov[1:nrow(cov_gathered),'studyID'] <- rep(study_Id,nrow(cov_gathered))
-    rec_tbl_cov[1:nrow(cov_gathered),'siteID'] <- rep(site_Id,nrow(cov_gathered))
+#    rec_tbl_cov[1:nrow(cov_gathered),'studyID'] <- rep(study_Id,nrow(cov_gathered))
+#    rec_tbl_cov[1:nrow(cov_gathered),'siteID'] <- rep(site_Id,nrow(cov_gathered))
     rec_tbl_cov[1:nrow(cov_gathered),'cov_name'] <-cov_gathered$cov_name
     rec_tbl_cov[1:nrow(cov_gathered),'cov_value'] <-cov_gathered$cov_value
     rec_tbl_cov[1:nrow(cov_gathered),'session_covar_ID'] <- rep(cov_sess_ID,nrow(cov_gathered))
@@ -1201,10 +1241,67 @@ eregr_register_covariates <- function (db_conn, study_Id, site_Id, cov_file_path
     if (l_tbl_cov_write) return (rec_tbl_cov) else stop("Could not write covariates data to the database table")
 }
 
-eregr_get_subjlist_from_covars <- function (db_conn, study_Id, site_Id, tbl_covariates = "covariates_general") {
+eregr_int_exists_metr <- function (db_conn, study_Id, site_Id, 
+                                       tbl_metrics = "metrics_data", tbl_sites_in_study="sites_in_study",
+                                        tbl_session_metr ="session_loadMetrics") {
+    query <- sprintf("SELECT *
+                        FROM %s LEFT JOIN %s USING (study_site_ID)
+                        INNER JOIN %s USING (session_metr_ID)
+                        WHERE siteID='%s' AND studyID='%s'",
+                        tbl_sites_in_study,tbl_session_metr,tbl_metrics, site_Id,S_ID)
+    tbl_metrdata_record <- dbGetQuery(db_conn,query)
+    return (nrow(tbl_metrdata_record))
+}
+eregr_int_erase_metr <- function (db_conn, study_Id, site_Id, 
+                                       tbl_metrics = "metrics_data", tbl_sites_in_study="sites_in_study",
+                                        tbl_session_metr ="session_loadMetrics") {
+    
+    query <- sprintf("DELETE FROM %s WHERE session_metr_ID IN 
+                        (SELECT session_metr_ID
+                            FROM %s INNER JOIN %s USING (study_site_ID)
+                            WHERE siteID='%s' AND studyID='%s')",tbl_metrics,tbl_session_metr, tbl_sites_in_study,site_Id, study_Id)
+
+    dbExecute(con,query)
+}
+
+
+eregr_register_metrics_csv <- function (db_conn, study_Id, site_Id, metr_file_path, metric_name,
+                                        tbl_metrics = "metrics_data", 
+                                        tbl_sess_metrics="session_loadMetrics", 
+                                        tbl_sites_in_study="sites_in_study") {
+    metr <- eregr_int_read_covariates(metr_file_path)
+    if (nrow(metr)<1) stop("Could not read metrics")
+   if(eregr_int_exists_metr(db_conn, study_Id, site_Id, tbl_metrics)>0) 
+        eregr_int_erase_metr (db_conn, study_Id, site_Id, tbl_metrics)
+    metr_sess_ID <- eregr_int_register_session_loadmetr(db_conn,study_Id,site_Id)
+    if (metr_sess_ID == FALSE) stop ("Could not register session for metrics data")
+
+    rec_tbl_metr <- eregr_int_get_tbl_header(db_conn, tblname = tbl_metrics)
+    metr_gathered <- metr %>% 
+                        gather(key = "ROI", value="value", -SubjID)
+    metr_gathered <- metr_gathered %>%
+                        rename(subjID = SubjID)
+
+    rec_tbl_metr[1:nrow(metr_gathered),'session_metr_ID'] <- rep(metr_sess_ID,nrow(metr_gathered))
+    rec_tbl_metr[1:nrow(metr_gathered),'subjID'] <- metr_gathered$subjID
+    rec_tbl_metr[1:nrow(metr_gathered),'metric'] <- rep(metric_name,nrow(metr_gathered))
+    rec_tbl_metr[1:nrow(metr_gathered),'ROI'] <-metr_gathered$ROI
+    rec_tbl_metr[1:nrow(metr_gathered),'vertex'] <- rep(1,nrow(metr_gathered))
+    rec_tbl_metr[1:nrow(metr_gathered),'value'] <- metr_gathered$value
+    rec_tbl_metr[1:nrow(metr_gathered),'row_ID'] <- rep(NA,nrow(metr_gathered))
+    l_tbl_cov_write <- dbWriteTable(db_conn, name = tbl_metrics, value = rec_tbl_metr, append=TRUE,row.names=FALSE)
+    if (l_tbl_cov_write) return (rec_tbl_metr) else stop("Could not write covariates data to the database table")
+
+}        
+        
+        
+eregr_get_subjlist_from_covars <- function (db_conn, study_Id, site_Id, tbl_covariates = "covariates_general",tbl_sess_covariates = "session_covariates",tbl_sites_in_study="sites_in_study") {
     #select the whole subtable of covariates for study/site from the covariates table. 
     #It's not the most efficient way.
-    query <- sprintf("SELECT * FROM %s WHERE studyID='%s' AND siteID='%s'",tbl_covariates,study_Id,site_Id)
+    query <- sprintf("SELECT studyID,siteID,subjID,cov_name,cov_value,session_covar_ID
+                            FROM %s INNER JOIN %s USING (session_covar_ID)
+                            INNER JOIN %s USING (study_site_ID)
+                            WHERE studyID='%s' AND siteID='%s'",tbl_covariates,tbl_sess_covariates, tbl_sites_in_study, study_Id,site_Id)
     tbl_covars <- dbGetQuery(db_conn, statement = query)
     df_subj <- tbl_covars %>%
                     select (subjID) %>% 
@@ -1212,40 +1309,15 @@ eregr_get_subjlist_from_covars <- function (db_conn, study_Id, site_Id, tbl_cova
     return (df_subj)
 }
 
-eregr_get_covariates <- function (db_conn, study_Id, site_Id, tbl_covariates = "covariates_general") {
-    query <- sprintf("SELECT * FROM %s WHERE studyID='%s' AND siteID='%s'",tbl_covariates,study_Id,site_Id)
+eregr_get_covariates <- function (db_conn, study_Id, site_Id, tbl_covariates = "covariates_general",tbl_sess_covariates = "session_covariates",tbl_sites_in_study="sites_in_study") {
+    query <- sprintf("SELECT studyID,siteID,subjID,cov_name,cov_value,session_covar_ID  
+                            FROM %s INNER JOIN %s USING (session_covar_ID)
+                            INNER JOIN %s USING (study_site_ID)
+                            WHERE studyID='%s' AND siteID='%s'",tbl_covariates,tbl_sess_covariates, tbl_sites_in_study, study_Id,site_Id)
     tbl_covars <- dbGetQuery(db_conn, statement = query)    
     return (tbl_covars)
 }
-eregr_set_covariates <- function (db_conn, study_Id, site_Id, cov_data, 
-                                    tbl_covariates = "covariates_general",
-                                    tbl_sess_covariates = "session_covariates") {
-    
-    cov_sess_ID <- eregr_int_register_covar_session (db_conn, study_Id, site_Id, "update",  tbl_sess_covariates)
-    #simple sanity checks:
-    index_from_data <- cov_data %>% 
-                        select (studyID,siteID) %>% 
-                            distinct()
-    n_index_from_data <- index_from_data %>%
-                            summarise(n=n_distinct(studyID,siteID))
-    
-    if (n_index_from_data$n!=1) {
-        print ("data in covars data.frame does belongs to several sites/studies. Skipping update.")
-        return (FALSE)
-    }
-    if ( (index_from_data$studyID != study_Id) | (index_from_data$siteID != site_Id) ) {
-        print ("study_Id and site_Id specified do not correspond to the data in covariates data.frame. Skipping update")
-        return (FALSE)
-    }    
-    cov_data[1:nrow(cov_data),'session_covar_ID'] <- rep(cov_sess_ID,nrow(cov_data))
-    
-    
-    if(eregr_int_exists_covars(db_conn, study_Id, site_Id, tbl_covariates)>0) 
-        eregr_int_erase_covars(db_conn, study_Id, site_Id, tbl_covariates)
 
-    l_set_covars <- dbWriteTable(db_conn,name = tbl_covariates,value = cov_data, append=TRUE,row.names=FALSE)
-    return (l_set_covars)
-}
 eregr_export_covariates <- function (db_conn, study_Id, site_Id, output_path,tbl_covariates = "covariates_general") {
     tbl_covars <- eregr_get_covariates(db_conn, study_Id, site_Id, tbl_covariates)
     tbl_forexport <- tbl_covars %>%
