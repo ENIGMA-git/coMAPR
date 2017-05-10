@@ -86,7 +86,9 @@ eregr_write_results_linear_models <- function (db_conn, study_Id, site_Id, ROI,r
                                                          tbl_lm_cohd_res = "lm_cohend_results",
                                                           tbl_lm_corr = "lm_corr_results",
                                                           tbl_lmvars = "lm_variables",
-                                                          tbl_lm_res_keys="lm_results_keys") {
+                                                          tbl_lm_res_keys="lm_results_keys",
+							tbl_cont_summ="lm_summary_cont",
+							tbl_fact_summ="lm_summary_fact") {
 
         
         # check if NULL
@@ -144,15 +146,83 @@ eregr_write_results_linear_models <- function (db_conn, study_Id, site_Id, ROI,r
                         select(lmID,sessionID,metric,ROI) %>% 
                             distinct()
         metr_ul <- df_res %>%
-                        select(metric) %>%
-                            unlist()
-	message(names(df_toreg_keys))
+                        select(metric) %>%	
+				distinct() %>%
+	                            unlist()
        l_write_keys <- dbWriteTable(db_conn, name = tbl_lm_res_keys, value = cbind(data.frame(res_keyID=NA),df_toreg_keys,data.frame(result_sessionID=res_sessionID)), append=TRUE,row.names=FALSE)
        if (l_write_keys == FALSE)
            stop(simpleError("could not write keys into lm_results_keys table"))
        query <- sprintf("SELECT * FROM %s WHERE result_sessionID='%s' AND lmID='%s' AND sessionID='%s' AND  ROI='%s'",tbl_lm_res_keys,res_sessionID, lm_name,lm_ses_Id,ROI);
        df_reg_keys <- dbGetQuery(db_conn, query)
-     
+ 	
+	l_write_cont_metr=TRUE
+	l_write_fact_metr=TRUE
+       #prepare summary statistics
+       for (m_i in seq_along(metr_ul)) {
+		cur_metr=try(which(res_models_tp[['metric']]==metr_ul[[m_i]])[[1]]) #first item in model results with current metrics
+		if(class(cur_metr)=='try-error') next
+		cur_model <- res_models_tp[['model']][[cur_metr]]
+		lm_summary <- map(cur_model, ~summary(.))
+		lm_sd<- map(cur_model,~tryCatch(sd(.), 
+                		warning = function(x) NA,
+		                error = function(x) NA)) # lm_sd is NA if variable is a factor
+
+		lm_cont_summ_table <- pmap(list(elem=lm_summary[!is.na(lm_sd)],elem_sd=lm_sd[!is.na(lm_sd)],elem_name=names(lm_summary[!is.na(lm_sd)])), 
+                                       function(elem,elem_sd,elem_name) {
+
+                                        cont_val<-try(data.frame(mean=elem[['Mean']],median=elem[['Median']],Q1=elem[['1st Qu.']], 
+                                                                Q3=elem[['3rd Qu.']],min=elem[['Min.']],max=elem[['Max.']],std=elem_sd,
+                                                                var=elem_name))
+                                        if(class(cont_val)=='try-error') {
+                                            cont_val <- data.frame(mean=NA, median=NA, Q1=NA, Q3=NA, min=NA, max=NA,std=NA,var=elem_name)
+                                        }
+                                        cont_val
+
+                })
+		lm_cont_summ_table<-do.call("rbind",lm_cont_summ_table)
+		lm_fact_summ_table <- pmap(list(elem=lm_summary[is.na(lm_sd)],elem_name=names(lm_summary[is.na(lm_sd)])), function(elem,elem_name) {
+
+                                        fact_val<-tryCatch(data.frame(value=as.numeric(names(elem)),amount = elem,var=elem_name),
+								warning=function(x) {message(str(elem))
+											message(elem_name)
+											}
+								)
+                                        if(class(fact_val)=='try-error') {
+                                            fact_val <- data.frame(value=NA,amount=NA,var=elem_name)
+                                        }
+                                        fact_val
+
+                })
+		lm_fact_summ_table <- do.call("rbind", lm_fact_summ_table)
+	
+		if(length(lm_cont_summ_table)>0) {
+			lm_cont_summ_table[['lmID']] <- lm_name
+			lm_cont_summ_table[['sessionID']] <- lm_ses_Id
+			lm_cont_summ_table[['ROI']] <- ROI
+			lm_cont_summ_table[['metric']] <- metr_ul[[m_i]]
+	
+			lm_cont_summ_table <- lm_cont_summ_table %>%
+                    			left_join(df_reg_keys, by=c("lmID","sessionID","ROI","metric")) %>%
+						select(res_keyID,var,mean,median,Q1,Q3,min,max,std)
+			l_write_cont_metr <- l_write_cont_metr & dbWriteTable(db_conn,name = tbl_cont_summ, value = lm_cont_summ_table, append=TRUE, row.names=FALSE)	
+		}
+		else
+			l_write_cont_metr <- FALSE
+		if(length(lm_fact_summ_table)>0) {
+			lm_fact_summ_table[['lmID']] <- lm_name
+			lm_fact_summ_table[['sessionID']] <- lm_ses_Id
+			lm_fact_summ_table[['ROI']] <- ROI
+			lm_fact_summ_table[['metric']] <- metr_ul[[m_i]]
+			lm_fact_summ_table <- lm_fact_summ_table %>%
+                    			left_join(df_reg_keys, by=c("lmID","sessionID","ROI","metric")) %>%
+						select(res_keyID,var,value,amount)
+		
+			l_write_fact_metr <- l_write_fact_metr & dbWriteTable(db_conn, name = tbl_fact_summ, value = lm_fact_summ_table, append=TRUE, row.names = FALSE)
+		}
+		else
+			l_write_fact_metr <- FALSE
+	}
+	
        df_res <- df_res %>% 
                     left_join(df_reg_keys, by=c("lmID","sessionID","ROI","metric")) %>%
                         select(res_keyID,vertex,var,beta,sterr,p_beta)
@@ -166,15 +236,18 @@ eregr_write_results_linear_models <- function (db_conn, study_Id, site_Id, ROI,r
         if (is.na(lm_mainfactor) | lm_mainfactor == "")
             return (l_write_lm_results)
         if(str_detect(lm_mainfactor,"factor")==TRUE) {
-            
             res_cohd <- map(res_models, function (x) {
                                             sum_x <- summary(x)
                                             res_tstat <- coef(sum_x)[,3]
                                             deg_fr <- sum_x[['df']][[2]]
                                             n_cont <- lm_res[['precheck']][['n_cont']]
                                             n_pat <- lm_res[['precheck']][['n_pat']]
-                                            lm_mf_idx <- which(str_detect(names(res_tstat),fixed(lm_mainfactor)))[[1]]
+					    
+                                            
+					    lm_mf_idx <- which(str_detect(names(res_tstat),fixed(lm_mainfactor)))[[1]]
+					   
                                             tstat_val <- res_tstat[[lm_mf_idx]]
+
                                             names_tstat<-names(res_tstat)
                                             var <- names_tstat[[lm_mf_idx]]
                                             coh_d <- partial.d (tstat_val,deg_fr,n_cont,n_pat)
@@ -197,7 +270,6 @@ eregr_write_results_linear_models <- function (db_conn, study_Id, site_Id, ROI,r
             df_cohd <- df_cohd %>%
                             left_join(df_reg_keys,by=c("lmID","sessionID","ROI","metric")) %>% 
                                 select (res_keyID,vertex,var,cohens_d,cohens_se,cohens_low_ci,cohens_high_ci,cohens_pval)
-#            return (df_cohd)
             l_write_lm_stats <- dbWriteTable(db_conn, name = tbl_lm_cohd_res, value = df_cohd, append=TRUE,row.names=FALSE)
             l_write_lm_results <- dbWriteTable(db_conn, name = tbl_lmres, value = df_res, append=TRUE,row.names=FALSE)
             
@@ -441,8 +513,12 @@ eregr_run_linear_models <- function (db_conn, study_Id, site_Id, ROI , excludeSu
         cont_min <- lm_record[['cont_min']]
         pat_min <- lm_record[['pat_min']]
         total_min <- NA
-        cont_val <- if( is.null(lm_record[['cont_value']]) ) NA else lm_record[['cont_value']] 
-        pat_val <- if(is.null(lm_record[['pat_value']]) ) NA else lm_record[['pat_value']]
+        cont_val <- if(cohensD)  
+				if(is.na(lm_record[['cont_value']]) | is.null(lm_record[['cont_value']]) ) 0 else lm_record[['cont_value']] 
+		    else NA
+        pat_val <- if(cohensD)
+				if(is.na(lm_record[['pat_value']]) | is.null(lm_record[['pat_value']]) ) 1 else lm_record[['pat_value']]
+		    else NA
         n_pat <- sum(df_covar[[main_factor]]==pat_val) 
         n_cont <- sum(df_covar[[main_factor]]==cont_val) 
 
@@ -477,7 +553,15 @@ eregr_run_linear_models <- function (db_conn, study_Id, site_Id, ROI , excludeSu
 	# - ROI
 	# filter the list of df_metr and df_vert and df_data according to feature set
 	# RUN evak_lm_metrvert
-
+	fs_data <- eregr_get_fs_for_lm_ROI(db_conn,study_Id,lm_Id,ROI)
+	metr_list <- fs_data %>% 
+			select(metric) %>%
+				distinct() %>%
+					unlist()
+	metr_list_bool <- df_metr %in% metr_list
+	df_metr <- df_metr[metr_list_bool]
+	df_vert <- df_vert[metr_list_bool]
+	df_list <- df_list[metr_list_bool]
 
         res <- list()
         res[['lmres']] <- pmap(list(metr_text=df_metr,vert_text=df_vert, df_data = df_list),eval_lm_metrvert, lm_text = lm_text, var_list = var_list)
@@ -1600,4 +1684,31 @@ eregr_meta_analysis_onemodel <- function(db_conn,study_Id,lm_Id,ROI_str,res_late
     l_write_cohd_res
     
 #    res_compare_lgl
+}
+
+
+
+
+#feature set functionality
+eregr_register_ROI_metr_for_FS <- function (db_conn, fs_Id, study_Id,lm_Id_list, metric_list,ROI_list,tbl_fs_name="feature_sets") {
+        tbl_fs <- eregr_int_get_tbl_header(db_conn,tbl_fs_name)
+        c = 0
+        for (i_lm in seq_along(lm_Id_list))
+            for (j_metr in seq_along(metric_list))
+                for(k_ROI in seq_along(ROI_list)) {
+                    c=c+1
+                    tbl_fs[c,'lmID']=lm_Id_list[[i_lm]]
+                    tbl_fs[c,'metric']=metric_list[[j_metr]]
+                    tbl_fs[c,'ROI']=ROI_list[[k_ROI]]
+                    tbl_fs[c,'studyID']=study_Id            
+                    tbl_fs[c,'fsID']=fs_Id
+                }
+        l_write_tbl_fs <- dbWriteTable(db_conn,name = tbl_fs_name, value = tbl_fs, append=TRUE, row.names=FALSE)     
+        l_write_tbl_fs
+}
+eregr_get_fs_for_lm_ROI <- function (db_conn, study_Id,lm_Id,ROI, tbl_fs_name="feature_sets") {
+    query <- sprintf("SELECT * 
+                      FROM %s
+                      WHERE studyID='%s' AND lmID = '%s' AND ROI = '%s' ",tbl_fs_name,study_Id, lm_Id, ROI)
+    dbGetQuery(db_conn,query)        
 }    
