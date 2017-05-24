@@ -234,8 +234,9 @@ eregr_write_results_linear_models <- function (db_conn, study_Id, site_Id, ROI,r
         l_write_lm_results <- FALSE
         #depends on type of mainfactor - write results table
         if (is.na(lm_mainfactor) | lm_mainfactor == "")
-            return (l_write_lm_results)
-        if(str_detect(lm_mainfactor,"factor")==TRUE) {
+            l_write_lm_results <- dbWriteTable(db_conn, name = tbl_lmres, value = df_res, append=TRUE,row.names=FALSE)
+	
+        else if(str_detect(lm_mainfactor,"factor")==TRUE) {
             res_cohd <- map(res_models, function (x) {
                                             sum_x <- summary(x)
                                             res_tstat <- coef(sum_x)[,3]
@@ -305,13 +306,13 @@ eregr_write_results_linear_models <- function (db_conn, study_Id, site_Id, ROI,r
             
         }
         # think of the output
-        l_write_lm_results & l_write_lm_stats
+        list(lm_results=l_write_lm_results,lm_stats=l_write_lm_stats)
     }
     res_list_tp <- transpose(res_list)
     model_res <- res_list_tp[['result']]
     lm_names <- names(res_list)
         
-    res_id_and_time <- eregr_int_get_unique_time_id()
+    res_id_and_time <- eregr_int_get_unique_time_id(db_conn)
     res_sessionID <- res_id_and_time[[2]]
        #temporarily removed 'safely'
     pmap(list(lm_name=lm_names, lm_res = model_res), safely(eregr_int_write_results_one_linear_model), 
@@ -407,7 +408,7 @@ eregr_run_linear_models <- function (db_conn, study_Id, site_Id, ROI , excludeSu
                 assert_condition <- if( n_vars !=ncol(lmres[['model']]) )
                    condition("model_lmeval_postcheck",list(n_vars = n_vars, ncol_data = ncol_data, ncol_model = ncol_model, names_data = names_data, names_model = names_model, nrow_data = nrow_data, nrow_model = nrow_model ),"model takes less variables than exist in data. Maybe model is overdefined.")
                 else if (nrow(df_data)!=nrow(lmres[['model']]))
-                    condition("model_lmeval_postcheck",list(n_vars = n_vars, ncol_data = ncol_data, ncol_model = ncol_model, names_data = names_data, names_model = names_model, nrow_data = nrow_data, nrow_model = nrow_model ),"not equal number of rows in input data and model")
+                    condition("model_lmeval_postcheck",list(n_vars = n_vars, ncol_data = ncol_data, ncol_model = ncol_model, names_data = names_data, names_model = names_model, nrow_data = nrow_data, nrow_model = nrow_model),"not equal number of rows in input data and model. Presumably metrics (or covars) have NA values.")
                 else 
                     NA
                 if (mode(assert_condition)=="list")
@@ -421,6 +422,11 @@ eregr_run_linear_models <- function (db_conn, study_Id, site_Id, ROI , excludeSu
         res
    }
    run_model <- function (lm_Id,df_covar,metr_data) {
+	#first check that there is metr data
+ 	if(nrow(metr_data)==0)
+		stop("No data in metrics table for study: ", study_Id, " site: ", site_Id,  " ROI: ", ROI)
+
+
         var_list <- eregr_get_lm_vars(db_conn, session_Id, lm_Id)
         mutate_df <- eregr_get_lm_mutate_vars(db_conn, session_Id,lm_Id)
         mutate_df
@@ -431,22 +437,21 @@ eregr_run_linear_models <- function (db_conn, study_Id, site_Id, ROI , excludeSu
         # spreading
         df_covar <- df_covar %>%
                 spread(key = cov_name, value = cov_value)
-        
+
         #tocheck with Neda and Boris - filtering for complete cases
-        lmvars_plain <- intersect (var_list[['var']], names(df_covar))
-        df_covar <- df_covar[complete.cases(df_covar[,lmvars_plain]),]
+#        lmvars_plain <- intersect (var_list[['var']], names(df_covar))
+#        df_covar <- df_covar[complete.cases(df_covar[,lmvars_plain]),]
         #end tocheck
 
         #mutating
+	
         mutate_df <- mutate_df %>%
                            arrange(order)
-
-        for (i in 1:nrow(mutate_df)) {
-            df_covar[[mutate_df[i,'var']]] <- df_covar %>%
+	if(nrow(mutate_df)>0)
+	        for (i in 1:nrow(mutate_df)) {
+        	    df_covar[[mutate_df[i,'var']]] <- df_covar %>%
                                             with(eval(parse(text=mutate_df[i,'formula'])))
-        }
-        
-
+        	}
         #selecting
         try({   colNums <- match(var_list[['var']],names(df_covar))
                              df_covar <- df_covar %>%
@@ -454,28 +459,27 @@ eregr_run_linear_models <- function (db_conn, study_Id, site_Id, ROI , excludeSu
                                      drop_na()
                             
                             })
-    
         lm_record <- eregr_get_lm_record(db_conn, session_Id, lm_Id)
         lm_text <- lm_record[['lm_text']]
         lm_mainfactor <- lm_record[['main_factor']]
  
-	main_factor <- NA
-	if(is.na(lm_mainfactor) | is.null(lm_mainfactor) | lm_mainfactor=="")
-		main_factor <- NA
-	if (str_detect(lm_mainfactor,"factor")==TRUE) { #factor(...) or factor(...):var
-		str_match <- str_match_all(lm_mainfactor,"(factor)\\(([A-Za-z0-9]+)\\)")
-		factor <- as.data.frame(str_match[[1]])
-		if(nrow(factor)>1) {
-	            	assert_condition <- condition("model_precheck",factor,"main_factor consists of more than one factor variable")
-			stop(assert_condition)
-		}
-		else if (nrow(factor)==1) # it is 1 factor or factor:continuous interaction
-			#PotERR if we have only (factor) in main_factor text
-			main_factor <- as.character(factor[[3]])
-	}
-	else { #no "factor" in main_factor field
-		main_factor <- lm_mainfactor
-	}
+#---begin refactor
+#	else 
+#		if (str_detect(lm_mainfactor,"factor")==TRUE) { #factor(...) or factor(...):var
+#			str_match <- str_match_all(lm_mainfactor,"(factor)\\(([A-Za-z0-9]+)\\)")
+#			factor <- as.data.frame(str_match[[1]])
+#			if(nrow(factor)>1) {
+#	        	    	assert_condition <- condition("model_precheck",factor,"main_factor consists of more than one factor variable")
+#				stop(assert_condition)
+#			}
+#			else if (nrow(factor)==1) # it is 1 factor or factor:continuous interaction
+#				#PotERR if we have only (factor) in main_factor text
+#				main_factor <- as.character(factor[[3]])
+#		}
+#		else { #no "factor" in main_factor field
+#				main_factor <- lm_mainfactor
+#		}
+#end refactor
         filter_text <- eregr_get_lm_filter(db_conn,  session_Id, lm_Id)
         #filtering
         if(!is.na(filter_text) & filter_text != "")
@@ -488,19 +492,52 @@ eregr_run_linear_models <- function (db_conn, study_Id, site_Id, ROI , excludeSu
 				})
         #pre-check should go here
         #building pre-check structure
-        mainfactor_exists <- TRUE
+ 	main_factor <- NA
+	mainfactor_exists <- FALSE
+        cohensD <- FALSE
+	factor <- NA
+        if (!(is.na(lm_mainfactor) | lm_mainfactor=="" | is.null(lm_mainfactor)))
+            mainfactor_exists <- TRUE
+
+	if(mainfactor_exists) {
+		# case 1 - lm_mainfactor has a word 'factor' in it
+		if (str_detect(lm_mainfactor,"factor\\([A-Za-z0-9]+\\)")==TRUE) {
+			str_factor_match <- str_match_all(lm_mainfactor,"(factor)\\(([A-Za-z0-9]+)\\)")[[1]]
+			factor <- as.data.frame(str_factor_match)
+			#check - no factor:factor integration is allowed
+			if(nrow(factor)>1) {
+	        	    	assert_condition <- condition("model_precheck",factor,"main_factor consists of more than one factor variable")
+				stop(assert_condition)
+			}
+			else if (nrow(factor)==1) {# it is 1 factor or factor:continuous interaction
+				main_factor <- as.character(factor[[3]])	
+				cohensD=TRUE
+			}
+		}
+		#case 2 - interaction of 2 continuous variables
+		else if (str_detect(lm_mainfactor,"([A-Za-z0-9]+)\\:([A-Za-z0-9]+)")==TRUE) {
+        	    	assert_condition <- condition("model_precheck",factor,"interaction of continuous variables in main_factor is not allowed")
+			stop(assert_condition)
+		}
+		else
+			main_factor <- lm_mainfactor			
+	}
+
         factors_in_model <- FALSE
         n_factors_in_model <- 0
-        cohensD <- FALSE
-        n_pat <- NA
+        pat_val <- NA
+	cont_val <- NA
+	n_pat <- NA
         n_cont <- NA
         levels <- NA
 	
-        if (is.na(lm_mainfactor) | lm_mainfactor=="") 
-            mainfactor_exists <- FALSE
-        else if (str_detect(lm_mainfactor,"factor")==TRUE) {
+	
+        if (cohensD) {
             levels <- n_distinct(df_covar[[main_factor]])
-            cohensD <- TRUE
+ 	    cont_val <- if(is.na(lm_record[['cont_value']]) | is.null(lm_record[['cont_value']]) ) 0 else lm_record[['cont_value']] 
+	    n_cont <- sum(df_covar[[main_factor]]==cont_val) 
+      	    pat_val <- if(is.na(lm_record[['pat_value']]) | is.null(lm_record[['pat_value']]) ) 1 else lm_record[['pat_value']]
+            n_pat <- sum(df_covar[[main_factor]]==pat_val) 
         }
         else {
             lm_vars <- eregr_get_lm_vars(db_conn,session_Id,lm_Id)
@@ -508,26 +545,15 @@ eregr_run_linear_models <- function (db_conn, study_Id, site_Id, ROI , excludeSu
                             filter(modifier=="factor") %>%
                                 summarise(n=n())
             n_factors_in_model <- lm_factors_num[['n']]
-            cohensD <- FALSE
         }
         cont_min <- lm_record[['cont_min']]
         pat_min <- lm_record[['pat_min']]
         total_min <- NA
-        cont_val <- if(cohensD)  
-				if(is.na(lm_record[['cont_value']]) | is.null(lm_record[['cont_value']]) ) 0 else lm_record[['cont_value']] 
-		    else NA
-        pat_val <- if(cohensD)
-				if(is.na(lm_record[['pat_value']]) | is.null(lm_record[['pat_value']]) ) 1 else lm_record[['pat_value']]
-		    else NA
-        n_pat <- sum(df_covar[[main_factor]]==pat_val) 
-        n_cont <- sum(df_covar[[main_factor]]==cont_val) 
-
             
         n_total <- nrow(df_covar)
         n_value <- data.frame(cont_min,pat_min,total_min,cont_val,pat_val,as.character(main_factor),n_pat,n_cont,n_total,levels,
                               mainfactor_exists, cohensD, n_factors_in_model)
         
-            
         #precheck - either no main_factor or factor(main_factor) or partcor - then there should be no factors in model
         # or no mainfactor at all
         #assert pre-check conditions
@@ -538,6 +564,8 @@ eregr_run_linear_models <- function (db_conn, study_Id, site_Id, ROI , excludeSu
                     inner_join(df_covar) %>%
                         rename(res = value))
         #splitting by metric and vertex
+	
+#	return(list(df_full,metr_data,df_covar))
         df_list <- df_full %>% split (list(df_full$metric,df_full$vertex))
         df_metrvert <- as.list(names(df_list)) %>%
                         map(strsplit,split="\\.")
@@ -558,10 +586,12 @@ eregr_run_linear_models <- function (db_conn, study_Id, site_Id, ROI , excludeSu
 			select(metric) %>%
 				distinct() %>%
 					unlist()
+
 	metr_list_bool <- df_metr %in% metr_list
 	df_metr <- df_metr[metr_list_bool]
 	df_vert <- df_vert[metr_list_bool]
 	df_list <- df_list[metr_list_bool]
+	
 
         res <- list()
         res[['lmres']] <- pmap(list(metr_text=df_metr,vert_text=df_vert, df_data = df_list),eval_lm_metrvert, lm_text = lm_text, var_list = var_list)
@@ -576,6 +606,7 @@ eregr_run_linear_models <- function (db_conn, study_Id, site_Id, ROI , excludeSu
         res
         
     }
+    message("Current ROI: ", ROI)
     #1. register lm_sessionID
     session_Id <- eregr_int_register_session_lm(db_conn,study_Id, site_Id)
     #2. read line from study_Id
@@ -616,12 +647,15 @@ eregr_run_linear_models <- function (db_conn, study_Id, site_Id, ROI , excludeSu
 
 
 eregr_get_metrics_data_byROI <- function (db_conn, study_Id, site_Id, ROI, 
-                                             tbl_metrics_data="metrics_data", tbl_sess_metrics="session_loadMetrics", tbl_sites_in_study="sites_in_study") {
+                                             tbl_metrics_data="metrics_data", tbl_sess_metrics="session_loadMetrics", tbl_sites_in_study="sites_in_study",tbl_study_metrics="study_metrics") {
     query <- sprintf("SELECT * 
                         FROM %s INNER JOIN %s USING (session_metr_ID) 
                         INNER JOIN %s USING (study_site_ID)
-                        WHERE studyID='%s' AND siteID='%s' AND ROI = '%s'",
-                    tbl_metrics_data, tbl_sess_metrics, tbl_sites_in_study,study_Id,site_Id,ROI)
+                        WHERE studyID='%s' AND siteID='%s' AND ROI = '%s' AND metric IN (
+			SELECT metr_name AS metric FROM %s
+			WHERE studyID='%s'
+			)",
+                    tbl_metrics_data, tbl_sess_metrics, tbl_sites_in_study,  study_Id,site_Id,ROI,tbl_study_metrics,study_Id)
     res <- dbGetQuery(db_conn,query)
     res
 }
@@ -748,6 +782,17 @@ eregr_int_get_tbl_header <- function (db_conn,tblname) {
     dbClearResult(res)
     tbl
 }
+eregr_add_study_metric <- function(db_conn, study_Id, metr_name, tbl_study_metrics="study_metrics") {
+	newmetr <- eregr_int_get_tbl_header(db_conn,tbl_study_metrics)
+	newmetr[1,'studyID'] <- study_Id
+	newmetr[1,'metr_name'] <- metr_name
+	dbWriteTable(db_conn,name = tbl_study_metrics, value = newmetr, append=TRUE,row.names = FALSE)
+}
+eregr_remove_study_metric <- function(db_conn, study_Id, metr_name, tbl_study_metrics="study_metrics") {
+	query <- sprintf("DELETE FROM %s WHERE studyID='%s' AND metr_name='%s'",
+			tbl_study_metrics,study_Id,metr_name)
+	dbExecute(db_conn,query)
+}
 
 eregr_register_study <- function (db_conn,study_Id, study_Name, gsheet_path, study_tblname="studies", study_metr_tblname="study_metrics") {
 
@@ -827,21 +872,22 @@ eregr_register_site <- function (db_conn,study_Id,site_Id,study_tblname="studies
     return (l_site_write)
 }
     
-eregr_int_get_unique_time_id <- function() {
+eregr_int_get_unique_time_id <- function(db_conn=NA) {
     dt <- Sys.time()
+    timestamp <- if (class(db_conn)=="MySQLConnection") format(as.POSIXlt(dt),'%Y-%m-%d %H:%M:%S') else dt
     unique_time_id <- paste(year(dt),sprintf("%02d",month(dt)),sprintf("%02d",day(dt)),hour(dt)*3600+minute(dt)*60+round(second(dt),digits=6),sep='')
-    return (list(dt,unique_time_id))
+    return (list(timestamp,unique_time_id))
 }    
     
 eregr_int_register_session_lm <- function(db_conn,study_Id,site_Id,session_tblname="session_lm_analysis") {
     
-    id_and_time <- eregr_int_get_unique_time_id()
+    id_and_time <- eregr_int_get_unique_time_id(db_conn)
     rec_session <- eregr_int_get_tbl_header(db_conn,session_tblname)
-
+	
     rec_session[1,'session_analysis_ID'] <- id_and_time[[2]]
     rec_session[1,'studyID'] <- study_Id
     rec_session[1,'siteID'] <- site_Id
-    rec_session[1,'timestamp'] <-id_and_time[[1]]
+    rec_session[1,'timestamp'] <- id_and_time[[1]]
     
     l_session_write <- dbWriteTable(db_conn,name=session_tblname,value=rec_session,append=TRUE,row.names=FALSE)
     if(l_session_write != FALSE)
@@ -1117,7 +1163,7 @@ eregr_int_register_session_loadmetr <- function(db_conn,study_Id,site_Id,session
                    tbl_sites_in_study,site_Id,study_Id);
     rec_sites_in_study <- dbGetQuery(db_conn,query)
     
-    id_and_time <- eregr_int_get_unique_time_id()
+    id_and_time <- eregr_int_get_unique_time_id(db_conn)
     rec_session_metr <- eregr_int_get_tbl_header(db_conn,session_tblname)
     rec_session_metr[1,'session_metr_ID'] <- id_and_time[[2]]
     rec_session_metr[1,'timestamp'] <-id_and_time[[1]]
@@ -1201,7 +1247,7 @@ eregr_int_exists_covars <- function (db_conn, study_Id, site_Id,
                         FROM %s LEFT JOIN %s USING (study_site_ID)
                         INNER JOIN %s USING (session_covar_ID)
                         WHERE siteID='%s' AND studyID='%s'",
-                        tbl_sites_in_study,tbl_session_cov,tbl_covariates, site_Id,S_ID)
+                        tbl_sites_in_study,tbl_session_cov,tbl_covariates, site_Id,study_Id)
     
     tbl_metrdata_record <- dbGetQuery(db_conn,query)
     return (nrow(tbl_metrdata_record))
@@ -1221,7 +1267,7 @@ eregr_int_register_covar_session <- function (db_conn, study_Id, site_Id, cov_fi
                                        tbl_sess_covariates = "session_covariates", tbl_sites_in_study="sites_in_study") {
         
         rec_covar_session <- eregr_int_get_tbl_header(db_conn, tblname = tbl_sess_covariates)
-        time_and_id <- eregr_int_get_unique_time_id()
+        time_and_id <- eregr_int_get_unique_time_id(db_conn)
         rec_covar_session[1,'session_covar_ID'] <- time_and_id[[2]]
         rec_covar_session[1,'timestamp'] <- time_and_id[[1]]
         if (cov_file_path=="update") {
@@ -1318,25 +1364,26 @@ eregr_register_covariates <- function (db_conn, study_Id, site_Id, cov_file_path
     if (l_tbl_cov_write) return (rec_tbl_cov) else stop("Could not write covariates data to the database table")
 }
 
-eregr_int_exists_metr <- function (db_conn, study_Id, site_Id, 
+eregr_int_exists_metr <- function (db_conn, study_Id, site_Id, metric_name,
                                        tbl_metrics = "metrics_data", tbl_sites_in_study="sites_in_study",
                                         tbl_session_metr ="session_loadMetrics") {
     query <- sprintf("SELECT *
                         FROM %s LEFT JOIN %s USING (study_site_ID)
                         INNER JOIN %s USING (session_metr_ID)
-                        WHERE siteID='%s' AND studyID='%s'",
-                        tbl_sites_in_study,tbl_session_metr,tbl_metrics, site_Id,S_ID)
+                        WHERE siteID='%s' AND studyID='%s' AND metric='%s'",
+                        tbl_sites_in_study,tbl_session_metr,tbl_metrics, site_Id,study_Id, metric_name)
     tbl_metrdata_record <- dbGetQuery(db_conn,query)
     return (nrow(tbl_metrdata_record))
 }
-eregr_int_erase_metr <- function (db_conn, study_Id, site_Id, 
+eregr_int_erase_metr <- function (db_conn, study_Id, site_Id,metric_name, 
                                        tbl_metrics = "metrics_data", tbl_sites_in_study="sites_in_study",
                                         tbl_session_metr ="session_loadMetrics") {
     
     query <- sprintf("DELETE FROM %s WHERE session_metr_ID IN 
                         (SELECT session_metr_ID
                             FROM %s INNER JOIN %s USING (study_site_ID)
-                            WHERE siteID='%s' AND studyID='%s')",tbl_metrics,tbl_session_metr, tbl_sites_in_study,site_Id, study_Id)
+                            WHERE siteID='%s' AND studyID='%s' AND metric='%s')",
+			tbl_metrics,tbl_session_metr, tbl_sites_in_study,site_Id, study_Id,metric_name)
 
     dbExecute(con,query)
 }
@@ -1348,8 +1395,8 @@ eregr_register_metrics_csv <- function (db_conn, study_Id, site_Id, metr_file_pa
                                         tbl_sites_in_study="sites_in_study") {
     metr <- eregr_int_read_covariates(metr_file_path)
     if (nrow(metr)<1) stop("Could not read metrics")
-   if(eregr_int_exists_metr(db_conn, study_Id, site_Id, tbl_metrics)>0) 
-        eregr_int_erase_metr (db_conn, study_Id, site_Id, tbl_metrics)
+   if(eregr_int_exists_metr(db_conn, study_Id, site_Id, metric_name)>0) 
+        eregr_int_erase_metr (db_conn, study_Id, site_Id,metric_name)
     metr_sess_ID <- eregr_int_register_session_loadmetr(db_conn,study_Id,site_Id)
     if (metr_sess_ID == FALSE) stop ("Could not register session for metrics data")
 
@@ -1559,6 +1606,7 @@ eregr_meta_analysis_onemodel <- function(db_conn,study_Id,lm_Id,ROI_str,res_late
                     })
             })
     }
+    print(lm_Id)
     #compare model across sites - check that all sites have same version of model
     res_compare_str <- eregr_meta_compare_model_across_sites(db_conn,lm_Id,ROI_str,res_latest_lm)
     res_compare_lgl <- map_lgl(res_compare_str,"result")
@@ -1583,11 +1631,14 @@ eregr_meta_analysis_onemodel <- function(db_conn,study_Id,lm_Id,ROI_str,res_late
     names(var_list) <- var_list
     metr_list <- unlist(select(data,metric)%>%distinct())
     names(metr_list) <- metr_list
-
+    
     tic()
-    data<-map(data_vwise_beta[1:5],~ meta_onevertex(.,metr_list,var_list))    
+    data<-map(data_vwise_beta,safely(~meta_onevertex(.,metr_list,var_list)))
+    data<-map(data,"result")
+    data<-data[lapply(data,length)!=0]
     toc()
 
+#    return(data)
     #compute meta-analysis for cohen's d
         
     query <- sprintf("
@@ -1603,10 +1654,15 @@ eregr_meta_analysis_onemodel <- function(db_conn,study_Id,lm_Id,ROI_str,res_late
     metr_list_cohd <- unlist(select(data_cohd,metric)%>%distinct())
     names(metr_list_cohd) <- metr_list_cohd
 
+
+    message("NOW TO COHEN's D!")
     tic()
-    data_cohd<-map(data_vwise_cohd[1:5],~ meta_onevertex(.,metr_list_cohd,var_list_cohd,'cohens_d','cohens_se'))    
+    data_cohd<-map(data_vwise_cohd,safely(~ meta_onevertex(.,metr_list_cohd,var_list_cohd,'cohens_d','cohens_se')))
+    data_cohd<-map(data_cohd,"result")
+    data_cohd<-data_cohd[lapply(data_cohd,length)!=0]
+   
     toc()
-    #return(data_cohd)
+#    return(data_cohd)
     #write results to session_meta
     tbl_sess_meta <- eregr_int_get_tbl_header(db_conn,tbl_session_meta)
     tbl_sess_meta[1,'session_meta_ID']=sess_id_and_time[[2]]
@@ -1648,20 +1704,24 @@ eregr_meta_analysis_onemodel <- function(db_conn,study_Id,lm_Id,ROI_str,res_late
         list_beta_res[[i]] <- d_rb2
     }
     df_beta_res <- as.data.frame(do.call(rbind,list_beta_res),stringsAsFactors=FALSE)
-    df_beta_res[['meta_key_ID']] <- tbl_sess_meta[[1,'meta_key_ID']]
-    df_beta_res <- df_beta_res %>% 
-                        select(meta_key_ID,metric,vertex,var,b,se,zval,pval,ci.lb,ci.ub,tau2,se.tau2,I2,H2) %>%
-                            rename(ci_lb = ci.lb,ci_ub=ci.ub,se_tau2=se.tau2)
-    df_beta_res[,5:14]<-sapply(df_beta_res[,5:14],as.numeric)
-    rownames(df_beta_res) <- NULL
+    if(nrow(df_beta_res)>0) {
+	    df_beta_res[['meta_key_ID']] <- tbl_sess_meta[[1,'meta_key_ID']]
+	    df_beta_res <- df_beta_res %>% 
+        	                select(meta_key_ID,metric,vertex,var,b,se,zval,pval,ci.lb,ci.ub,tau2,se.tau2,I2,H2) %>%
+                	            rename(ci_lb = ci.lb,ci_ub=ci.ub,se_tau2=se.tau2)
+	    df_beta_res[,5:14]<-sapply(df_beta_res[,5:14],as.numeric)
+	    rownames(df_beta_res) <- NULL
 #    return(df_beta_res)
-    l_write_beta_res <- dbWriteTable(db_conn,name=tbl_meta_beta_res,value = df_beta_res,append=TRUE,row.names=FALSE)
+	    l_write_beta_res <- dbWriteTable(db_conn,name=tbl_meta_beta_res,value = df_beta_res,append=TRUE,row.names=FALSE)
+    }
+    else
+	l_write_beta_res<-FALSE
     if(!l_write_beta_res) stop("error writing beta - metaanalysis results")
     l_write_beta_res
     #write results to meta_cohend
     list_cohd_res = list()
     for (i in seq_along(data_cohd)) {
-        d_rb1<-pmap(list(d=data[[i]],n=names(data[[i]])), 
+        d_rb1<-pmap(list(d=data_cohd[[i]],n=names(data_cohd[[i]])), 
                                 function(d,n){ 
                                 res <- as.data.frame(do.call(rbind,d),stringsAsFactors=FALSE)
                                 res[['var']] <- rownames(res)
@@ -1673,15 +1733,19 @@ eregr_meta_analysis_onemodel <- function(db_conn,study_Id,lm_Id,ROI_str,res_late
         list_beta_res[[i]] <- d_rb2
     }
     df_cohd_res <- as.data.frame(do.call(rbind,list_beta_res),stringsAsFactors=FALSE)
-    df_cohd_res[['meta_key_ID']] <- tbl_sess_meta[[1,'meta_key_ID']]
-    df_cohd_res <- df_cohd_res %>% 
-                        select(meta_key_ID,metric,vertex,var,b,se,zval,pval,ci.lb,ci.ub,tau2,se.tau2,I2,H2) %>%
-                            rename(cohd=b,ci_lb = ci.lb,ci_ub=ci.ub,se_tau2=se.tau2)
-    df_cohd_res[,5:14]<-sapply(df_cohd_res[,5:14],as.numeric)
-    rownames(df_cohd_res) <- NULL
-#    return(df_beta_res)
-    l_write_cohd_res <- dbWriteTable(db_conn,name=tbl_meta_cohd_res,value = df_cohd_res,append=TRUE,row.names=FALSE)        
-    l_write_cohd_res
+    if(nrow(df_cohd_res)>0) {
+	    df_cohd_res[['meta_key_ID']] <- tbl_sess_meta[[1,'meta_key_ID']]
+	    df_cohd_res <- df_cohd_res %>% 
+        	                select(meta_key_ID,metric,vertex,var,b,se,zval,pval,ci.lb,ci.ub,tau2,se.tau2,I2,H2) %>%
+                	            rename(cohd=b,ci_lb = ci.lb,ci_ub=ci.ub,se_tau2=se.tau2)
+	    df_cohd_res[,5:14]<-sapply(df_cohd_res[,5:14],as.numeric)
+	    rownames(df_cohd_res) <- NULL
+	#    return(df_beta_res)
+	    l_write_cohd_res <- dbWriteTable(db_conn,name=tbl_meta_cohd_res,value = df_cohd_res,append=TRUE,row.names=FALSE)        
+    }
+    else 
+	l_write_cohd_res <- FALSE
+    list(l_beta=l_write_beta_res,l_cohd=l_write_cohd_res)
     
 #    res_compare_lgl
 }
