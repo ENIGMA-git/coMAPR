@@ -1750,6 +1750,47 @@ eregr_meta_analysis_onemodel <- function(db_conn,study_Id,lm_Id,ROI_str,res_late
 #    res_compare_lgl
 }
 
+#forest plots
+forest_plot_cohd <- function(db_conn, study_Id, lm_Id, ROI,site_list, use_meta=FALSE) {
+    message(lm_Id)
+    query <- sprintf("SELECT LRK.res_keyID,vertex,var,SLA.studyID,SLA.siteID,LM.lmID,cohens_d,cohens_se,cohens_low_ci,cohens_high_ci,cohens_pval 
+FROM lm_cohend_results LCR, lm_results_keys LRK, linear_model LM, session_lm_analysis SLA, (SELECT studyID,siteID,lmID,ROI,MAX(result_sessionID) as max_res_sess_ID FROM lm_results_keys LRK, session_lm_analysis SLA
+WHERE LRK.sessionID=SLA.session_analysis_ID
+AND SLA.studyID='%s' AND LRK.lmID='%s'
+AND ROI='%s'
+AND SLA.siteID IN ('%s')
+GROUP BY studyID,siteID,lmID,ROI) RES_MAX
+WHERE LCR.res_keyID=LRK.res_keyID AND LRK.lmID=LM.lmID and LRK.sessionID=SLA.session_analysis_ID and 
+LRK.sessionID=LM.sessionID
+AND SLA.studyID='%s' and LM.lmID='%s'
+AND LRK.result_sessionID = max_res_sess_ID 
+AND SLA.siteID = RES_MAX.siteID and LRK.lmID=RES_MAX.lmID and LRK.ROI=RES_MAX.ROI 
+AND SLA.studyID=RES_MAX.studyID",study_Id,lm_Id,ROI,paste(site_list,collapse="','"),study_Id,lm_Id)
+    res <- dbGetQuery(db_conn,query)
+    if(use_meta) {
+        query_meta <- sprintf("SELECT * FROM meta_cohd_results MCR, session_meta SM, (SELECT MAX(session_meta_ID) AS max_meta_ID FROM session_meta SM 
+WHERE studyID='%s' AND lmID='%s' AND ROI='%s'
+) SM_MAX
+WHERE MCR.meta_key_ID=SM.meta_key_ID AND 
+SM.session_meta_ID=max_meta_ID
+AND studyID='%s' AND lmID='%s' AND ROI='%s'",study_Id,lm_Id,ROI,study_Id,lm_Id,ROI)
+        meta_res <- dbGetQuery(db_conn,query_meta)
+        return (forestplot(title = "Cohen's D summary\n ROI: ACR\n model: SZPatVsCont_all_covariates",labeltext = c(res$siteID,"SUMMARY"),
+           mean = c(res$cohens_d,meta_res$cohd),
+           lower  = c(res$cohens_low_ci,meta_res$ci_lb), 
+           upper = c(res$cohens_high_ci,meta_res$ci_ub),
+           is.summary = c(rep(FALSE,length(res$cohens_d)),rep(TRUE,length(meta_res$cohd))),
+           col=fpColors(box="royalblue",line="darkblue", summary="royalblue")))
+    }
+        
+    forestplot(title = sprintf("Cohen's D summary\n ROI: %s\n model: %s",ROI,lm_Id),
+           labeltext = c(res$siteID),
+           mean = c(res$cohens_d),
+           lower  = c(res$cohens_low_ci), 
+           upper = c(res$cohens_high_ci),
+           is.summary = c(rep(FALSE,length(res$cohens_d))),
+           col=fpColors(box="royalblue",line="darkblue", summary="royalblue"))
+}
 
 
 
