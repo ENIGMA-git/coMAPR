@@ -9,7 +9,7 @@ library(tictoc)
 library(stringr)
 library(purrr)
 library(metafor)
-
+library(forestplot)
 #----auxiliary
 var_as_num <- function (x,varname) {
     x[[varname]] <- as.numeric(x[[varname]])
@@ -1608,9 +1608,9 @@ eregr_meta_analysis_onemodel <- function(db_conn,study_Id,lm_Id,ROI_str,res_late
     }
     print(lm_Id)
     #compare model across sites - check that all sites have same version of model
-    res_compare_str <- eregr_meta_compare_model_across_sites(db_conn,lm_Id,ROI_str,res_latest_lm)
-    res_compare_lgl <- map_lgl(res_compare_str,"result")
-    if(!all(res_compare_lgl)) stop(simpleError("not all models match")) #here we should return res_compare structure
+#    res_compare_str <- eregr_meta_compare_model_across_sites(db_conn,lm_Id,ROI_str,res_latest_lm)
+#    res_compare_lgl <- map_lgl(res_compare_str,"result")
+#    if(!all(res_compare_lgl)) stop(simpleError("not all models match")) #here we should return res_compare structure
     
     #select compute meta-analysis for betas
     res_latest_filtered=res_latest_lm %>% 
@@ -1623,8 +1623,8 @@ eregr_meta_analysis_onemodel <- function(db_conn,study_Id,lm_Id,ROI_str,res_late
     SELECT res_keyID,lmID,siteID,ROI,metric,result_sessionID,vertex,var,beta,sterr 
     FROM lm_results LMR LEFT JOIN lm_results_keys USING (res_keyID) 
     LEFT JOIN session_lm_analysis ON lm_results_keys.sessionID=session_lm_analysis.session_analysis_ID
-    WHERE result_sessionID in ('%s') AND lmID in ('%s')
-    ",paste(res_session_ID,collapse="','"),paste(lm_Id,collapse="','"))
+    WHERE result_sessionID in ('%s') AND lmID in ('%s') AND ROI='%s'
+    ",paste(res_session_ID,collapse="','"),paste(lm_Id,collapse="','"),ROI_str)
     data <- dbGetQuery(db_conn,query)    #run rma.uni
     data_vwise_beta <- data %>% split (data$vertex)
     var_list <- unlist(select(data,var)%>%distinct())
@@ -1645,8 +1645,8 @@ eregr_meta_analysis_onemodel <- function(db_conn,study_Id,lm_Id,ROI_str,res_late
     SELECT res_keyID,lmID,siteID,ROI,metric,result_sessionID,vertex,var,cohens_d,cohens_se
     FROM lm_cohend_results LMR LEFT JOIN lm_results_keys USING (res_keyID) 
     LEFT JOIN session_lm_analysis ON lm_results_keys.sessionID=session_lm_analysis.session_analysis_ID
-    WHERE result_sessionID in ('%s') AND lmID in ('%s')
-    ",paste(res_session_ID,collapse="','"),paste(lm_Id,collapse="','"))
+    WHERE result_sessionID in ('%s') AND lmID in ('%s') AND ROI='%s'
+    ",paste(res_session_ID,collapse="','"),paste(lm_Id,collapse="','"),ROI_str)
     data_cohd <- dbGetQuery(db_conn,query)    #run rma.uni
     data_vwise_cohd <- data_cohd %>% split (data_cohd$vertex)
     var_list_cohd <- unlist(select(data_cohd,var)%>%distinct())
@@ -1766,7 +1766,7 @@ AND SLA.studyID='%s' and LM.lmID='%s'
 AND LRK.result_sessionID = max_res_sess_ID 
 AND SLA.siteID = RES_MAX.siteID and LRK.lmID=RES_MAX.lmID and LRK.ROI=RES_MAX.ROI 
 AND SLA.studyID=RES_MAX.studyID",study_Id,lm_Id,ROI,paste(site_list,collapse="','"),study_Id,lm_Id)
-    res <- dbGetQuery(db_conn,query)
+    res <- dbGetQuery(db_conn,query) %>% arrange(siteID)
     if(use_meta) {
         query_meta <- sprintf("SELECT * FROM meta_cohd_results MCR, session_meta SM, (SELECT MAX(session_meta_ID) AS max_meta_ID FROM session_meta SM 
 WHERE studyID='%s' AND lmID='%s' AND ROI='%s'
