@@ -1594,7 +1594,7 @@ eregr_meta_compare_model_across_sites <- function(db_conn, lm_Id, ROI_str, res_l
     res<-pmap(list(lm_Id=r_cross$lmID.x,ROI=r_cross$ROI.x,site_Id_1=r_cross$siteID.x,site_Id_2=r_cross$siteID.y,
          session_Id_1=r_cross$sessionID.x,session_Id_2=r_cross$sessionID.y),eregr_meta_compare_mod_sess_pair,db_conn=db_conn)
 }
-eregr_meta_analysis_onemodel <- function(db_conn,study_Id,lm_Id,ROI_str,res_latest_lm, sess_id_and_time,
+eregr_meta_analysis_onemodel <- function(db_conn,study_Id,lm_Id,ROI_str,res_latest_lm, sess_id_and_time, compare_models=FALSE,
                                         tbl_session_meta="session_meta", tbl_meta_beta_res="meta_beta_results",
                                         tbl_meta_cohd_res="meta_cohd_results", tbl_sites_in_meta="sites_in_meta") {
     meta_onevertex <- function (df_vwise,metr_list,var_list,beta_name='beta',sterr_name='sterr') {         
@@ -1608,10 +1608,11 @@ eregr_meta_analysis_onemodel <- function(db_conn,study_Id,lm_Id,ROI_str,res_late
     }
     print(lm_Id)
     #compare model across sites - check that all sites have same version of model
-#    res_compare_str <- eregr_meta_compare_model_across_sites(db_conn,lm_Id,ROI_str,res_latest_lm)
-#    res_compare_lgl <- map_lgl(res_compare_str,"result")
-#    if(!all(res_compare_lgl)) stop(simpleError("not all models match")) #here we should return res_compare structure
-    
+    if(compare_models) {
+	    res_compare_str <- eregr_meta_compare_model_across_sites(db_conn,lm_Id,ROI_str,res_latest_lm)
+	    res_compare_lgl <- map_lgl(res_compare_str,"result")
+	    if(!all(res_compare_lgl)) stop(simpleError("not all models match")) #here we should return res_compare structure
+    }
     #select compute meta-analysis for betas
     res_latest_filtered=res_latest_lm %>% 
                         filter(ROI==ROI_str,lmID==lm_Id) 
@@ -1638,7 +1639,7 @@ eregr_meta_analysis_onemodel <- function(db_conn,study_Id,lm_Id,ROI_str,res_late
     data<-data[lapply(data,length)!=0]
     toc()
 
-#    return(data)
+ #   return(data)
     #compute meta-analysis for cohen's d
         
     query <- sprintf("
