@@ -1,0 +1,10 @@
+##How to create SQLite database.
+
+Use tool: mysql2sqlite.sh https://gist.github.com/esperlu/943776
+
+with the following syntax:
+./mysql2sqlite.sh --no-data -u MyUser -pMyPassword MyDatabaseName > MyDatabase_create.sql - this will create SQL statement for schema creation
+
+./mysql2sqlite.sh --no-data -u MyUser -pMyPassword MyDatabaseName | sqlite3 MyDatabase.sqlite - this will create database itself
+
+
