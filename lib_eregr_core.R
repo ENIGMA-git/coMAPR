@@ -810,7 +810,7 @@ eregr_register_study <- function (db_conn,study_Id, study_Name, gsheet_path, stu
     rec_study <- eregr_int_get_tbl_header(db_conn, study_tblname)
     #some renaming to fit the database naming convention
     rec_model <- gs_model %>%
-                    rename(studyID=ID,study_analysis_path=AnalysisList_Path,study_demographics_path=DemographicsList_Path,study_data_format=Type)
+                    rename(studyID=ID,study_analysis_path=AnalysisList_Path,study_demographics_path=DemographicsList_Path,study_data_format=Type,study_fs_path=FeatureSetList_Path)
     rec_model$study_gDoc_path=gsheet_path
     #selecting the traits to write in separae data table
     nTraits <- length(strsplit(gs_model$Trait,'[; ]+')[[1]])
@@ -829,6 +829,7 @@ eregr_register_study <- function (db_conn,study_Id, study_Name, gsheet_path, stu
     rec_study[1,'studyID'] <- rec_model[['studyID']]
     rec_study[1,'study_analysis_path'] <- rec_model[['study_analysis_path']]
     rec_study[1,'study_demographics_path'] <- rec_model[['study_demographics_path']]
+    rec_study[1,'study_fs_path'] <- rec_model[['study_fs_path']]
     rec_study[1,'study_data_format'] <- rec_model[['study_data_format']]
     rec_study[1,'study_gDoc_path'] <- gsheet_path
     #writing to database
@@ -1261,7 +1262,7 @@ eregr_int_erase_covars <- function (db_conn, study_Id, site_Id,
                             FROM %s INNER JOIN %s USING (study_site_ID)
                             WHERE siteID='%s' AND studyID='%s')",tbl_covariates,tbl_session_cov, tbl_sites_in_study,site_Id, study_Id)
 
-    dbExecute(con,query)
+    dbExecute(db_conn,query)
 }
 eregr_int_register_covar_session <- function (db_conn, study_Id, site_Id, cov_file_path, 
                                        tbl_sess_covariates = "session_covariates", tbl_sites_in_study="sites_in_study") {
@@ -1385,7 +1386,7 @@ eregr_int_erase_metr <- function (db_conn, study_Id, site_Id,metric_name,
                             WHERE siteID='%s' AND studyID='%s' AND metric='%s')",
 			tbl_metrics,tbl_session_metr, tbl_sites_in_study,site_Id, study_Id,metric_name)
 
-    dbExecute(con,query)
+    dbExecute(db_conn,query)
 }
 
 
@@ -1796,25 +1797,108 @@ AND studyID='%s' AND lmID='%s' AND ROI='%s'",study_Id,lm_Id,ROI,study_Id,lm_Id,R
 
 
 #feature set functionality
-eregr_register_ROI_metr_for_FS <- function (db_conn, fs_Id, study_Id,lm_Id_list, metric_list,ROI_list,tbl_fs_name="feature_sets") {
+eregr_register_feature_sets <- function (db_conn, study_Id,site_Id, 
+                                         erase_existing_fs = TRUE, 
+                                         tbl_fs_name="feature_sets",tbl_study_metr='study_metrics', 
+                                         tbl_sites_in_study ='sites_in_study', tbl_session_fs='session_fs',
+                                        tbl_fs_newregr='feature_sets_newregr') {
+    study_row <- eregr_get_study_info(db_conn,study_Id)
+    metric_list <- dbReadTable(db_conn,name=tbl_study_metr) %>%
+                            filter (studyID==study_Id) %>%
+                                    select(metr_name) %>%
+                                            unlist()
+    if (length(metric_list) <1 ) stop("length of metrics_list for study ", study_Id, " less than 1")
+
+# read feature set gdoc
+    fs_path <- study_row[['study_fs_path']]
+    fs_data <- fs_path %>%
+                    gs_url() %>%
+                            gs_read()
+# get study_site_ID
+    query <- sprintf("SELECT study_site_ID FROM %s
+         WHERE studyID='%s' AND siteID='%s'",tbl_sites_in_study,study_Id,site_Id)
+    study_site_ID <- dbGetQuery(db_conn,query)
+    if (nrow(study_site_ID)<1) 
+        stop ("couldn't find study_site_ID for study ", study_Id, " and site ", site_Id)
+    else if (nrow(study_site_ID)>1) 
+         stop ("Found more than 1 study_site_ID for study ", study_Id, " and site ", site_Id ,". CHECK DATABASE CONSISTENCY!")
+    study_site_ID <- study_site_ID[[1]]
+
+# generate session_fs_ID:
+    time_and_id <- eregr_int_get_unique_time_id(db_conn)
+    session_fs_ID <- time_and_id[[2]]
+    timestamp <- time_and_id[[1]]
+
+    apply(fs_data,1, function(fs_line) {
+        if (is.na(fs_line[['FeatureSet']])) 
+            return (NA)
+        fsID <- fs_line[['FeatureSet']]
+        
+        #preparing and writing session into session_fs table
+        session_fs_tbl <- eregr_int_get_tbl_header(db_conn,tbl_session_fs)
+        session_fs_tbl[1,'session_fs_ID'] <- session_fs_ID
+        session_fs_tbl[1,'fsID'] <- fsID
+        session_fs_tbl[1,'timestamp'] <- timestamp
+        session_fs_tbl[1,'study_site_ID'] <- study_site_ID
+                    
+        l_session_fs <- dbWriteTable(db_conn, name=tbl_session_fs, value = session_fs_tbl, append = TRUE, row.names = FALSE)
+#        l_session_fs
+        
+        # writing combinations of ROI and metrics for feature set
+        fs_line[['Contents']] <- str_replace_all(fs_line[['Contents']],pattern='\\s',replacement="")
+
+        ROI_list <- strsplit(fs_line[['Contents']],split=',')[[1]]
+        #check for ROI length > 0
+        if(length(ROI_list)<1 | sum(is.na(ROI_list))>0) 
+            stop("could not extract ROI list for feature set: ", fsID)
+
+        l_reg_ROI <- eregr_register_ROI_metr_for_FS(db_conn,fsID,session_fs_ID,metric_list,ROI_list)
+            
+        #preparing and writing new regressors into feature_sets_newregr table
+        
+        newregr <- str_replace_all(fs_line[['NewRegressors']],pattern='\\s',replacement="")
+        if(is.na(newregr) | newregr=="") return(NA)
+
+        split_regr <- str_split(newregr,';')[[1]]
+        command_to_exec <- str_replace_all(split_regr,"^.*=","")
+        command_to_exec <- str_replace_all(command_to_exec,"(?:\\{ROI:|\\{cov:)([\\w]+)\\}",str_c("as.numeric(","\\1",")"))
+        new_regr_name <- str_replace_all(split_regr,"=.*$","") 
+        
+            
+        fs_newregr_tbl <- eregr_int_get_tbl_header(db_conn, tbl_fs_newregr)
+        fs_newregr_tbl[1:length(new_regr_name),'fsID'] <- NA
+        fs_newregr_tbl[['var']] <- new_regr_name
+        fs_newregr_tbl[['formula']] <- command_to_exec
+        fs_newregr_tbl[['fsID']] <- fsID
+        fs_newregr_tbl[['session_fs_ID']] <- session_fs_ID
+        l_fs_newregr <- dbWriteTable(db_conn,name=tbl_fs_newregr,value = fs_newregr_tbl, append = TRUE, row.names = FALSE)
+        
+        list(l_session_fs, l_reg_ROI, l_fs_newregr)
+    })
+}
+
+
+#eregr_int_register_global_regressor <- function (db_conn, study_Id,
+
+eregr_register_ROI_metr_for_FS <- function (db_conn, fs_Id, session_fs_ID, metric_list,ROI_list,tbl_fs_name="feature_sets") {
         tbl_fs <- eregr_int_get_tbl_header(db_conn,tbl_fs_name)
         c = 0
-        for (i_lm in seq_along(lm_Id_list))
-            for (j_metr in seq_along(metric_list))
+    	for (j_metr in seq_along(metric_list))
                 for(k_ROI in seq_along(ROI_list)) {
                     c=c+1
-                    tbl_fs[c,'lmID']=lm_Id_list[[i_lm]]
                     tbl_fs[c,'metric']=metric_list[[j_metr]]
                     tbl_fs[c,'ROI']=ROI_list[[k_ROI]]
-                    tbl_fs[c,'studyID']=study_Id            
+                    tbl_fs[c,'session_fs_ID']=session_fs_ID
                     tbl_fs[c,'fsID']=fs_Id
                 }
         l_write_tbl_fs <- dbWriteTable(db_conn,name = tbl_fs_name, value = tbl_fs, append=TRUE, row.names=FALSE)     
         l_write_tbl_fs
 }
+
 eregr_get_fs_for_lm_ROI <- function (db_conn, study_Id,lm_Id,ROI, tbl_fs_name="feature_sets") {
     query <- sprintf("SELECT * 
                       FROM %s
                       WHERE studyID='%s' AND lmID = '%s' AND ROI = '%s' ",tbl_fs_name,study_Id, lm_Id, ROI)
     dbGetQuery(db_conn,query)        
-}    
+}
+    
