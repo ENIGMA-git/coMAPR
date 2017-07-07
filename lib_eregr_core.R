@@ -98,6 +98,22 @@ eregr_write_results_linear_models <- function (db_conn, study_Id, site_Id, ROI,r
         res_demog <- lm_res[['precheck']]
         res_models <- lm_res[['lmres']]
 
+#	res_error <- map_lgl(res_models, function (res) {
+#			if (!is.null(res[['error']])){
+#				message("Failed on postcheck: ", lm_name, "; metric: ", res[['metric']], "; vertex: ", res[['vertex']])
+#				TRUE
+#			}
+#			else
+#				FALSE
+#		})
+	report_error <- res_models[res_error]
+
+
+
+	res_models <- res_models[!res_error]
+	
+
+
         lm_record <- eregr_get_lm_record(db_conn,lm_res[['sessionID']], lm_name)
         lm_mainfactor <- lm_record[['main_factor']]
         
@@ -279,8 +295,9 @@ eregr_write_results_linear_models <- function (db_conn, study_Id, site_Id, ROI,r
            
 	    # 1. check that mainfactor is the same as 1st variable
             res_pcor <- map (res_models, function (x) {
-
+		      message("before error")
                       pcor <- ppcor::pcor.test(x$model[,1],x$model[,2],x$model[,3:ncol(x$model)])
+		      message("after error")
                       corr_val<-pcor[,1]
                       corr_pval<- pcor[,2]
 
@@ -306,7 +323,7 @@ eregr_write_results_linear_models <- function (db_conn, study_Id, site_Id, ROI,r
             
         }
         # think of the output
-        list(lm_results=l_write_lm_results,lm_stats=l_write_lm_stats)
+        list(lm_results=l_write_lm_results,lm_stats=l_write_lm_stats,lm_error = report_error)
     }
     res_list_tp <- transpose(res_list)
     model_res <- res_list_tp[['result']]
@@ -315,9 +332,10 @@ eregr_write_results_linear_models <- function (db_conn, study_Id, site_Id, ROI,r
     res_id_and_time <- eregr_int_get_unique_time_id(db_conn)
     res_sessionID <- res_id_and_time[[2]]
        #temporarily removed 'safely'
-    pmap(list(lm_name=lm_names, lm_res = model_res), safely(eregr_int_write_results_one_linear_model), 
+    res<-pmap(list(lm_name=lm_names, lm_res = model_res), safely(eregr_int_write_results_one_linear_model), 
          db_conn = db_conn, study_Id = study_Id, site_Id = site_Id, ROI = ROI, res_sessionID = res_sessionID)
-    
+    names(res) <- lm_names
+    res    
 }
 
 
@@ -396,7 +414,6 @@ eregr_get_fs_covariates <- function (db_conn, study_Id, site_Id, fs_Id, session_
 			AND studyID = '%s' AND siteID='%s' AND FSC.session_fs_ID='%s' AND FSC.fsID='%s'
 			",tbl_fs_covars,tbl_sess_fs,tbl_sites_in_study,study_Id,site_Id,session_fs_Id,fs_Id)
 	res<-dbGetQuery(db_conn,query)
-	message(query)
 	res
 }
 
@@ -435,29 +452,33 @@ eregr_run_linear_models <- function (db_conn, study_Id, site_Id, ROI , excludeSu
    }
    run_model <- function (lm_Id_elem,df_covar,metr_data) {
 	#first check that there is metr data
+	if(nrow(metr_data)==0)
+		stop("No data in metrics table for study: ", study_Id, " site: ", site_Id,  " ROI: ", ROI)
+	
 	lm_Id <- lm_Id_elem[[1]]
 	fs_Id <- lm_Id_elem[[2]]
 	session_fs_Id <- lm_Id_elem[[3]]
-	print(lm_Id_elem)
-
+	message("Running model ", lm_Id)
 	global_fs_covars <- eregr_get_fs_covariates(db_conn,study_Id,site_Id,fs_Id,session_fs_Id)
-	global_fs_covars <- global_fs_covars %>% spread(cov_name,cov_value)
- 	if(nrow(metr_data)==0)
-		stop("No data in metrics table for study: ", study_Id, " site: ", site_Id,  " ROI: ", ROI)
-	
-	metr_data <- inner_join(metr_data, global_fs_covars, by=c("subjID","metric","vertex"))
 
+	# augment metr_data with global covariates only if there are those covariates
+	if (nrow(global_fs_covars)>0) {
+		global_fs_covars <- global_fs_covars %>% spread(cov_name,cov_value)
+		metr_data <- inner_join(metr_data, global_fs_covars, by=c("subjID","metric","vertex"))
+	}
         var_list <- eregr_get_lm_vars(db_conn, session_Id, lm_Id)
         mutate_df <- eregr_get_lm_mutate_vars(db_conn, session_Id,lm_Id)
         mutate_df
         #mutate, select and cleanup
         CURRENT_ROI = ROI
         # transforming cov_value to numeric 
-        df_covar[,'cov_value'] <- as.numeric (df_covar[,'cov_value'])
+    
+	df_covar[,'cov_value'] <- as.numeric (df_covar[,'cov_value'])
         # spreading
         df_covar <- df_covar %>%
                 spread(key = cov_name, value = cov_value)
 
+	saveRDS(df_covar,'/ifs/loni/faculty/thompson/four_d/disaev/projects/mass_uv_regr_20/enigma_mdd/NESDA/res/df_covar_0.rds')
         #tocheck with Neda and Boris - filtering for complete cases
 #        lmvars_plain <- intersect (var_list[['var']], names(df_covar))
 #        df_covar <- df_covar[complete.cases(df_covar[,lmvars_plain]),]
@@ -468,7 +489,6 @@ eregr_run_linear_models <- function (db_conn, study_Id, site_Id, ROI , excludeSu
 	
 
         #mutating
-	
         mutate_df <- mutate_df %>%
                            arrange(order)
 	if(nrow(mutate_df)>0)
@@ -478,10 +498,14 @@ eregr_run_linear_models <- function (db_conn, study_Id, site_Id, ROI , excludeSu
         	}
         #selecting
         try({   colNums <- match(var_list[['var']],names(df_covar))
-                             df_covar <- df_covar %>%
-                                 select (colNums,subjID) %>%
-                                     drop_na()
-                            
+	     	df_covar <- df_covar %>%
+			 select (colNums,subjID)
+ 
+		var_list_notFilters <- var_list %>% filter(modifier!='filter')
+		
+		colNumsNotFilt <-  match(var_list_notFilters[['var']],names(df_covar))
+		df_covar <- df_covar %>%
+		                   drop_na(colNumsNotFilt)                            
                             })
         lm_record <- eregr_get_lm_record(db_conn, session_Id, lm_Id)
         lm_text <- lm_record[['lm_text']]
@@ -505,6 +529,7 @@ eregr_run_linear_models <- function (db_conn, study_Id, site_Id, ROI , excludeSu
 #		}
 #end refactor
         filter_text <- eregr_get_lm_filter(db_conn,  session_Id, lm_Id)
+	saveRDS(df_covar,'/ifs/loni/faculty/thompson/four_d/disaev/projects/mass_uv_regr_20/enigma_mdd/NESDA/res/df_covar.rds')
         #filtering
         if(!is.na(filter_text) & filter_text != "")
             df_covar <- tryCatch(df_covar %>% 
@@ -514,7 +539,9 @@ eregr_run_linear_models <- function (db_conn, study_Id, site_Id, ROI , excludeSu
 					message(filter_text)
 					stop(e)
 				})
-        #pre-check should go here
+        
+	saveRDS(df_covar,'/ifs/loni/faculty/thompson/four_d/disaev/projects/mass_uv_regr_20/enigma_mdd/NESDA/res/df_covar_1.rds')
+	#pre-check should go here
         #building pre-check structure
  	main_factor <- NA
 	mainfactor_exists <- FALSE
@@ -525,8 +552,8 @@ eregr_run_linear_models <- function (db_conn, study_Id, site_Id, ROI , excludeSu
 
 	if(mainfactor_exists) {
 		# case 1 - lm_mainfactor has a word 'factor' in it
-		if (str_detect(lm_mainfactor,"factor\\([A-Za-z0-9]+\\)")==TRUE) {
-			str_factor_match <- str_match_all(lm_mainfactor,"(factor)\\(([A-Za-z0-9]+)\\)")[[1]]
+		if (str_detect(lm_mainfactor,"factor\\([A-Za-z0-9\\_]+\\)")==TRUE) {
+			str_factor_match <- str_match_all(lm_mainfactor,"(factor)\\(([A-Za-z0-9\\_]+)\\)")[[1]]
 			factor <- as.data.frame(str_factor_match)
 			#check - no factor:factor integration is allowed
 			if(nrow(factor)>1) {
@@ -539,7 +566,7 @@ eregr_run_linear_models <- function (db_conn, study_Id, site_Id, ROI , excludeSu
 			}
 		}
 		#case 2 - interaction of 2 continuous variables
-		else if (str_detect(lm_mainfactor,"([A-Za-z0-9]+)\\:([A-Za-z0-9]+)")==TRUE) {
+		else if (str_detect(lm_mainfactor,"([A-Za-z0-9\\_]+)\\:([A-Za-z0-9\\_]+)")==TRUE) {
         	    	assert_condition <- condition("model_precheck",factor,"interaction of continuous variables in main_factor is not allowed")
 			stop(assert_condition)
 		}
@@ -604,9 +631,7 @@ eregr_run_linear_models <- function (db_conn, study_Id, site_Id, ROI , excludeSu
 	# - ROI
 	# filter the list of df_metr and df_vert and df_data according to feature set
 	# RUN evak_lm_metrvert
-	message("feature set begin")
 	fs_data <- eregr_get_fs_for_lm_ROI(db_conn,fs_Id,session_fs_Id,ROI)
-	message("feature set end")
 #_NEW_FEATURE_SET 
 # here add computation of new covariates
 #move it up to df_full
@@ -648,7 +673,7 @@ eregr_run_linear_models <- function (db_conn, study_Id, site_Id, ROI , excludeSu
     results <- transpose(res_lm_reg)[['result']]
     errs <- transpose(res_lm_reg)[['error']]
     if ( sum(map_lgl(errs,~ !is.null(.) )) > 0 ){
-        assert_condition <- condition("lm_registration",errs,"error on the stage of linear model registration")
+        assert_condition <- condition("lm_registration",errs,"Not all models could be registered. Error on the stage of linear model registration.")
         stop(assert_condition)
     }
     #4. process covariates
@@ -943,7 +968,6 @@ eregr_int_register_lm <- function (db_conn, lm_Id, session_Id, study_Id, gs_data
     
     register_vars_lm <- function (vars_tblname ="lm_variables",inter_tblname="lm_interactions") {
         tbl_vars <- eregr_int_get_tbl_header(db_conn,vars_tblname)
-	print(names(tbl_vars))
         tbl_inter <- dbReadTable(db_conn,name=inter_tblname)
 
         lm_text <- rec_lm$lm_text
@@ -951,8 +975,6 @@ eregr_int_register_lm <- function (db_conn, lm_Id, session_Id, study_Id, gs_data
 	var_global <- str_extract_all(lm_text,"(\\{global\\:([\\w]+)\\})")
 	var_global <- str_replace_all(var_global[[1]],"(\\{global\\:([\\w]+)\\})","\\2")
 
-	print(lm_text)
-	print(var_global)
         #extracting variable names
         var_list <- strsplit(lm_text,"[:+ ]+")[[1]]
         unique_var_list <- unique(var_list)
@@ -973,7 +995,6 @@ eregr_int_register_lm <- function (db_conn, lm_Id, session_Id, study_Id, gs_data
                 return (FALSE)
             }
         }
-	print(unique_var_list)
         interactions <- data.frame(var1,var2,stringsAsFactors = FALSE)
         #extracting modifiers. for now we have only one modifier - 'factor'
         var_modifiers <- vector("character", length(unique_var_list))
@@ -994,10 +1015,7 @@ eregr_int_register_lm <- function (db_conn, lm_Id, session_Id, study_Id, gs_data
 	    	var_isglobal[i] <- unique_var_list[i] %in% var_global
             }
         }   
-	print(class(var_isglobal))
         var_recs <- data.frame(var_name,var_modifiers,var_isglobal,stringsAsFactors = FALSE)
-	print(var_recs)
-	print(interactions)
         #check if one variable exists with and without modifier - it should not be like that
         tbl_sum <- var_recs %>% 
                         group_by (var_name) %>%
@@ -1018,7 +1036,6 @@ eregr_int_register_lm <- function (db_conn, lm_Id, session_Id, study_Id, gs_data
             rec_lm_vars[i,'modifier'] <- var_recs$var_modifiers[i]
             rec_lm_vars[i,'is_global'] <- as.logical(var_recs$var_isglobal[i])
 	}
-	print(rec_lm_vars)
         #writing variables to table 'lm_variables'
         rec_lm_vars <- rec_lm_vars %>% 
                             drop_na()
@@ -1087,9 +1104,10 @@ eregr_int_register_lm <- function (db_conn, lm_Id, session_Id, study_Id, gs_data
         var_list <- rec_vars %>%
                         select (var)
         newRegressors_txt <- if (is.null(gs_lm$NewRegressors) | is.na(gs_lm$NewRegressors)) '' else gs_lm$NewRegressors
-        if (newRegressors_txt == '') return (TRUE)
+        newRegressors_txt <- str_replace_all(newRegressors_txt,fixed(" "),"")
+	if (newRegressors_txt == '') return (TRUE)
         
-        regr_split <- strsplit(newRegressors_txt,"[; ]+")[[1]]
+        regr_split <- strsplit(newRegressors_txt,"[;]+")[[1]]
         rec_mutate <- tbl_mutate[0,]
         
         var_mutate <- vector ("character",0)
@@ -1098,16 +1116,17 @@ eregr_int_register_lm <- function (db_conn, lm_Id, session_Id, study_Id, gs_data
             if (use_uscores==TRUE) {
                 regr_split[i]<- gsub(x = regr_split[i],pattern = "(__)",replacement = "")
             }
+	    var1 = str_match(regr_split[i],"^(\\w+)\\=")
+            rec_mutate[i,'var'] <- var1[1,2]
 
-            formula_split <- strsplit (regr_split[i],"[\\= ]+")[[1]]
+	    formula1 = str_match(regr_split[i],"\\=(.*)$")
+            rec_mutate[i,'formula'] <- formula1[1,2]
+
             #check length of formula_split
 #            if(length(formula_split)!=2) {
 #                print (paste("incorrect formula for variable", formula_split[1],". exiting model."))
 #                return (FALSE)
 #            }
-            
-            rec_mutate[i,'var'] <- formula_split[[1]]
-            rec_mutate[i,'formula'] <- paste(formula_split[2:length(formula_split)],collapse = '=')    
             if(grepl("eval",rec_mutate[i,'formula'], fixed=TRUE)==TRUE) {
 #                    ROI <- "13"
 #                    rec_mutate[i,'formula'] <- eval(rec_mutate[i,'formula']))
