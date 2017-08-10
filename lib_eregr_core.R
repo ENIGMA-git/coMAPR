@@ -100,7 +100,7 @@ eregr_write_results_linear_models <- function (db_conn, study_Id, site_Id, ROI,r
 
 #	res_error <- map_lgl(res_models, function (res) {
 #			if (!is.null(res[['error']])){
-#				message("Failed on postcheck: ", lm_name, "; metric: ", res[['metric']], "; vertex: ", res[['vertex']])
+#				message("ailed on postcheck: ", lm_name, "; metric: ", res[['metric']], "; vertex: ", res[['vertex']])
 #				TRUE
 #			}
 #			else
@@ -543,6 +543,7 @@ eregr_run_linear_models <- function (db_conn, study_Id, site_Id, ROI , excludeSu
 	saveRDS(df_covar,'/ifs/loni/faculty/thompson/four_d/disaev/projects/mass_uv_regr_20/enigma_mdd/NESDA/res/df_covar_1.rds')
 	#pre-check should go here
         #building pre-check structure
+
  	main_factor <- NA
 	mainfactor_exists <- FALSE
         cohensD <- FALSE
@@ -1104,7 +1105,7 @@ eregr_int_register_lm <- function (db_conn, lm_Id, session_Id, study_Id, gs_data
         var_list <- rec_vars %>%
                         select (var)
         newRegressors_txt <- if (is.null(gs_lm$NewRegressors) | is.na(gs_lm$NewRegressors)) '' else gs_lm$NewRegressors
-        newRegressors_txt <- str_replace_all(newRegressors_txt,fixed(" "),"")
+        newRegressors_txt <- str_replace_all(newRegressors_txt,"[\\n\\r\\s]+","")
 	if (newRegressors_txt == '') return (TRUE)
         
         regr_split <- strsplit(newRegressors_txt,"[;]+")[[1]]
