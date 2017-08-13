@@ -98,14 +98,14 @@ eregr_write_results_linear_models <- function (db_conn, study_Id, site_Id, ROI,r
         res_demog <- lm_res[['precheck']]
         res_models <- lm_res[['lmres']]
 
-#	res_error <- map_lgl(res_models, function (res) {
-#			if (!is.null(res[['error']])){
+	res_error <- map_lgl(res_models, function (res) {
+			if (!is.null(res[['error']])){
 #				message("ailed on postcheck: ", lm_name, "; metric: ", res[['metric']], "; vertex: ", res[['vertex']])
-#				TRUE
-#			}
-#			else
-#				FALSE
-#		})
+				TRUE
+			}
+			else
+				FALSE
+		})
 	report_error <- res_models[res_error]
 
 
@@ -166,6 +166,7 @@ eregr_write_results_linear_models <- function (db_conn, study_Id, site_Id, ROI,r
 				distinct() %>%
 	                            unlist()
        l_write_keys <- dbWriteTable(db_conn, name = tbl_lm_res_keys, value = cbind(data.frame(res_keyID=NA),df_toreg_keys,data.frame(result_sessionID=res_sessionID)), append=TRUE,row.names=FALSE)
+
        if (l_write_keys == FALSE)
            stop(simpleError("could not write keys into lm_results_keys table"))
        query <- sprintf("SELECT * FROM %s WHERE result_sessionID='%s' AND lmID='%s' AND sessionID='%s' AND  ROI='%s'",tbl_lm_res_keys,res_sessionID, lm_name,lm_ses_Id,ROI);
@@ -295,9 +296,7 @@ eregr_write_results_linear_models <- function (db_conn, study_Id, site_Id, ROI,r
            
 	    # 1. check that mainfactor is the same as 1st variable
             res_pcor <- map (res_models, function (x) {
-		      message("before error")
                       pcor <- ppcor::pcor.test(x$model[,1],x$model[,2],x$model[,3:ncol(x$model)])
-		      message("after error")
                       corr_val<-pcor[,1]
                       corr_pval<- pcor[,2]
 
@@ -1674,6 +1673,7 @@ FROM (SELECT LRK.lmID,LRK.metric,LRK.ROI, LM_SLA.siteID, MAX(LRK.result_sessionI
 		WHERE LM_SLA.lmID=LRK.lmID AND LM_SLA.sessionID=LRK.sessionID
 		GROUP BY LRK.lmID,LRK.metric,LRK.ROI, LM_SLA.siteID ) LRK_MAX, lm_results_keys LRK_2
 WHERE LRK_MAX.MAX_RSID=LRK_2.result_sessionID",study_Id,paste(site_Id,collapse="','"),paste(lm_list,collapse="','"));
+print(query)
 dbGetQuery(db_conn,query)
 }
 eregr_meta_compare_model_across_sites <- function(db_conn, lm_Id, ROI_str, res_latest_lm) {
@@ -1843,29 +1843,32 @@ eregr_meta_analysis_onemodel <- function(db_conn,study_Id,lm_Id,ROI_str,res_late
 }
 
 #forest plots
-forest_plot_cohd <- function(db_conn, study_Id, lm_Id, ROI,site_list, use_meta=FALSE) {
+forest_plot_cohd <- function(db_conn, study_Id, lm_Id, ROI,metric,site_list, use_meta=FALSE) {
     message(lm_Id)
     query <- sprintf("SELECT LRK.res_keyID,vertex,var,SLA.studyID,SLA.siteID,LM.lmID,cohens_d,cohens_se,cohens_low_ci,cohens_high_ci,cohens_pval 
-FROM lm_cohend_results LCR, lm_results_keys LRK, linear_model LM, session_lm_analysis SLA, (SELECT studyID,siteID,lmID,ROI,MAX(result_sessionID) as max_res_sess_ID FROM lm_results_keys LRK, session_lm_analysis SLA
+FROM lm_cohend_results LCR, lm_results_keys LRK, linear_model LM, session_lm_analysis SLA, (SELECT studyID,siteID,lmID,ROI,metric,MAX(result_sessionID) as max_res_sess_ID FROM lm_results_keys LRK, session_lm_analysis SLA
 WHERE LRK.sessionID=SLA.session_analysis_ID
 AND SLA.studyID='%s' AND LRK.lmID='%s'
 AND ROI='%s'
+AND metric='%s'
 AND SLA.siteID IN ('%s')
-GROUP BY studyID,siteID,lmID,ROI) RES_MAX
+GROUP BY studyID,siteID,lmID,ROI,metric) RES_MAX
 WHERE LCR.res_keyID=LRK.res_keyID AND LRK.lmID=LM.lmID and LRK.sessionID=SLA.session_analysis_ID and 
 LRK.sessionID=LM.sessionID
 AND SLA.studyID='%s' and LM.lmID='%s'
 AND LRK.result_sessionID = max_res_sess_ID 
-AND SLA.siteID = RES_MAX.siteID and LRK.lmID=RES_MAX.lmID and LRK.ROI=RES_MAX.ROI 
-AND SLA.studyID=RES_MAX.studyID",study_Id,lm_Id,ROI,paste(site_list,collapse="','"),study_Id,lm_Id)
+AND SLA.siteID = RES_MAX.siteID and LRK.lmID=RES_MAX.lmID and LRK.ROI=RES_MAX.ROI and LRK.metric=RES_MAX.metric
+AND SLA.studyID=RES_MAX.studyID",study_Id,lm_Id,ROI,metric,paste(site_list,collapse="','"),study_Id,lm_Id)
     res <- dbGetQuery(db_conn,query) %>% arrange(siteID)
+print(query)
+print(res)
     if(use_meta) {
         query_meta <- sprintf("SELECT * FROM meta_cohd_results MCR, session_meta SM, (SELECT MAX(session_meta_ID) AS max_meta_ID FROM session_meta SM 
 WHERE studyID='%s' AND lmID='%s' AND ROI='%s'
 ) SM_MAX
 WHERE MCR.meta_key_ID=SM.meta_key_ID AND 
 SM.session_meta_ID=max_meta_ID
-AND studyID='%s' AND lmID='%s' AND ROI='%s'",study_Id,lm_Id,ROI,study_Id,lm_Id,ROI)
+AND studyID='%s' AND lmID='%s' AND ROI='%s' AND metric='%s'",study_Id,lm_Id,ROI,study_Id,lm_Id,ROI,metric)
         meta_res <- dbGetQuery(db_conn,query_meta)
         return (forestplot(title = "Cohen's D summary\n ROI: ACR\n model: SZPatVsCont_all_covariates",labeltext = c(res$siteID,"SUMMARY"),
            mean = c(res$cohens_d,meta_res$cohd),
@@ -1875,7 +1878,7 @@ AND studyID='%s' AND lmID='%s' AND ROI='%s'",study_Id,lm_Id,ROI,study_Id,lm_Id,R
            col=fpColors(box="royalblue",line="darkblue", summary="royalblue")))
     }
         
-    forestplot(title = sprintf("Cohen's D summary\n ROI: %s\n model: %s",ROI,lm_Id),
+    forestplot(title = sprintf("Cohen's D summary\n ROI: %s\n metric: %s\n model: %s",ROI,metric,lm_Id),
            labeltext = c(res$siteID),
            mean = c(res$cohens_d),
            lower  = c(res$cohens_low_ci), 
