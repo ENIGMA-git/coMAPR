@@ -88,7 +88,8 @@ eregr_write_results_linear_models <- function (db_conn, study_Id, site_Id, ROI,r
                                                           tbl_lmvars = "lm_variables",
                                                           tbl_lm_res_keys="lm_results_keys",
 							tbl_cont_summ="lm_summary_cont",
-							tbl_fact_summ="lm_summary_fact") {
+							tbl_fact_summ="lm_summary_fact",
+							tbl_lm_demog_res="lm_demog_results") {
 
         
         # check if NULL
@@ -249,6 +250,7 @@ eregr_write_results_linear_models <- function (db_conn, study_Id, site_Id, ROI,r
 #        df_demog <- data.frame (lmID = lm_name, sessionID = lm_ses_Id, studyID = study_Id, 
         l_write_lm_stats <- FALSE
         l_write_lm_results <- FALSE
+	l_write_demog_stats <- FALSE
         #depends on type of mainfactor - write results table
         if (is.na(lm_mainfactor) | lm_mainfactor == "")
             l_write_lm_results <- dbWriteTable(db_conn, name = tbl_lmres, value = df_res, append=TRUE,row.names=FALSE)
@@ -260,7 +262,7 @@ eregr_write_results_linear_models <- function (db_conn, study_Id, site_Id, ROI,r
                                             deg_fr <- sum_x[['df']][[2]]
                                             n_cont <- lm_res[['precheck']][['n_cont']]
                                             n_pat <- lm_res[['precheck']][['n_pat']]
-					    
+					    n_overall <- lm_res[['precheck']][['n_total']]					    
                                             
 					    lm_mf_idx <- which(str_detect(names(res_tstat),fixed(lm_mainfactor)))[[1]]
 					   
@@ -274,8 +276,8 @@ eregr_write_results_linear_models <- function (db_conn, study_Id, site_Id, ROI,r
                                             coh_low_ci <- coh_bound[[1]]
                                             coh_high_ci <- coh_bound[[2]]
                                             coh_pval<- coef(sum_x)[lm_mf_idx,4]
-                                            coh_res <- c(var,coh_d,coh_se,coh_low_ci,coh_high_ci,coh_pval)
-                                            names(coh_res) <- c("var","cohens_d","cohens_se","cohens_low_ci","cohens_high_ci","cohens_pval")
+                                            coh_res <- c(var,coh_d,coh_se,coh_low_ci,coh_high_ci,coh_pval,n_overall,n_cont,n_pat)
+                                            names(coh_res) <- c("var","cohens_d","cohens_se","cohens_low_ci","cohens_high_ci","cohens_pval","n_overall","n_cont","n_pat")
                                             coh_res
                             })
             df_cohd <- as.data.frame (do.call("rbind",res_cohd))
@@ -286,9 +288,15 @@ eregr_write_results_linear_models <- function (db_conn, study_Id, site_Id, ROI,r
             df_cohd[['ROI']] <- ROI
             
             df_cohd <- df_cohd %>%
-                            left_join(df_reg_keys,by=c("lmID","sessionID","ROI","metric")) %>% 
+                            left_join(df_reg_keys,by=c("lmID","sessionID","ROI","metric"))
+	    df_demog <- df_cohd %>%
+				select (res_keyID,n_overall,n_cont,n_pat)
+	    df_cohd <- df_cohd %>%
                                 select (res_keyID,vertex,var,cohens_d,cohens_se,cohens_low_ci,cohens_high_ci,cohens_pval)
             l_write_lm_stats <- dbWriteTable(db_conn, name = tbl_lm_cohd_res, value = df_cohd, append=TRUE,row.names=FALSE)
+
+            l_write_demog_stats <- dbWriteTable(db_conn, name = tbl_lm_demog_res, value = df_demog, append=TRUE,row.names=FALSE)
+
             l_write_lm_results <- dbWriteTable(db_conn, name = tbl_lmres, value = df_res, append=TRUE,row.names=FALSE)
             
         }
@@ -299,13 +307,18 @@ eregr_write_results_linear_models <- function (db_conn, study_Id, site_Id, ROI,r
                       pcor <- ppcor::pcor.test(x$model[,1],x$model[,2],x$model[,3:ncol(x$model)])
                       corr_val<-pcor[,1]
                       corr_pval<- pcor[,2]
+     		      n_cont <- 0
+                      n_pat <- 0
+		      n_overall <- lm_res[['precheck']][['n_total']]					    
+                                            
 
+		      
                       corr_se <- summary(x)$coefficients[names(x[['model']])[[2]],2]
                       lm_mf_idx <- which(str_detect(names(x[['model']]),fixed(lm_mainfactor)))[[1]]
                       var <- names(x[['model']])[[lm_mf_idx]]
-                      corr_res <- c(var,corr_val,corr_pval,corr_se)
+                      corr_res <- c(var,corr_val,corr_pval,corr_se,n_overall,n_cont,n_pat)
                     
-                      names(corr_res) <- c ("var","corr","corr_pval","corr_se")
+                      names(corr_res) <- c ("var","corr","corr_pval","corr_se","n_overall","n_cont","n_pat")
                       corr_res              
             })
             df_pcor <- as.data.frame(do.call("rbind",res_pcor))
@@ -315,14 +328,19 @@ eregr_write_results_linear_models <- function (db_conn, study_Id, site_Id, ROI,r
             df_pcor[['siteID']] <- site_Id
             df_pcor[['ROI']] <- ROI
             df_pcor <- df_pcor %>% 
-                            left_join(df_reg_keys,by=c("lmID","sessionID","ROI","metric")) %>% 
-                                select(res_keyID,vertex,var,corr,corr_pval,corr_se)
+                            left_join(df_reg_keys,by=c("lmID","sessionID","ROI","metric"))
+            df_demog <- df_pcor %>%
+				select (res_keyID,n_overall,n_cont,n_pat)
+    	    df_pcor <- df_pcor %>%
+	                        select(res_keyID,vertex,var,corr,corr_pval,corr_se)
             l_write_lm_stats <- dbWriteTable(db_conn,name = tbl_lm_corr,value = df_pcor, append=TRUE,row.names=FALSE)
+	    
+            l_write_demog_stats <- dbWriteTable(db_conn, name = tbl_lm_demog_res, value = df_demog, append=TRUE,row.names=FALSE)
             l_write_lm_results <- dbWriteTable(db_conn, name = tbl_lmres, value = df_res, append=TRUE,row.names=FALSE)
             
         }
         # think of the output
-        list(lm_results=l_write_lm_results,lm_stats=l_write_lm_stats,lm_error = report_error)
+        list(lm_results=l_write_lm_results,lm_stats=l_write_lm_stats, lm_demog = l_write_demog_stats, lm_error = report_error)
     }
     res_list_tp <- transpose(res_list)
     model_res <- res_list_tp[['result']]
@@ -1843,6 +1861,28 @@ eregr_meta_analysis_onemodel <- function(db_conn,study_Id,lm_Id,ROI_str,res_late
 }
 
 #forest plots
+demog_summary <- function (db_conn, study_Id, lm_Id, ROI,metric,site_list, use_meta=FALSE) {
+    query <- sprintf("SELECT LRK.res_keyID,vertex,var,SLA.studyID,SLA.siteID,LM.lmID,LDR.n_cont, LDR.n_pat, LDR.n_overall, cohens_d,cohens_se,cohens_low_ci,cohens_high_ci,cohens_pval 
+FROM lm_cohend_results LCR, lm_demog_results LDR, lm_results_keys LRK, linear_model LM, session_lm_analysis SLA, (SELECT studyID,siteID,lmID,ROI,metric,MAX(result_sessionID) as max_res_sess_ID FROM lm_results_keys LRK, session_lm_analysis SLA
+WHERE LRK.sessionID=SLA.session_analysis_ID
+AND SLA.studyID='%s' AND LRK.lmID='%s'
+AND ROI='%s'
+AND metric='%s'
+AND SLA.siteID IN ('%s')
+GROUP BY studyID,siteID,lmID,ROI,metric) RES_MAX
+WHERE LCR.res_keyID=LRK.res_keyID AND LDR.res_keyID=LRK.res_keyID AND LDR.res_keyID=LCR.res_keyID AND LRK.lmID=LM.lmID and LRK.sessionID=SLA.session_analysis_ID and 
+LRK.sessionID=LM.sessionID
+AND SLA.studyID='%s' and LM.lmID='%s'
+AND LRK.result_sessionID = max_res_sess_ID 
+AND SLA.siteID = RES_MAX.siteID and LRK.lmID=RES_MAX.lmID and LRK.ROI=RES_MAX.ROI and LRK.metric=RES_MAX.metric
+AND SLA.studyID=RES_MAX.studyID",study_Id,lm_Id,ROI,metric,paste(site_list,collapse="','"),study_Id,lm_Id)
+    res <- dbGetQuery(db_conn,query) %>% arrange(siteID)
+
+
+
+}
+
+
 forest_plot_cohd <- function(db_conn, study_Id, lm_Id, ROI,metric,site_list, use_meta=FALSE) {
     message(lm_Id)
     query <- sprintf("SELECT LRK.res_keyID,vertex,var,SLA.studyID,SLA.siteID,LM.lmID,cohens_d,cohens_se,cohens_low_ci,cohens_high_ci,cohens_pval 
