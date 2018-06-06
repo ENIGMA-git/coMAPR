@@ -13,7 +13,7 @@
 suppressPackageStartupMessages(source(file='lib_eregr_core.R'))
 
 cmdargs = commandArgs(trailingOnly=T)
-if(length(cmdargs) != 5) {
+if(length(cmdargs) != 7) {
 	dput(cmdargs)
 	stop("incorrect number of parameters")
 }
@@ -32,6 +32,11 @@ names(ROI_VEC) <- ROI_VEC
 Results_Path <- cmdargs[4]
 
 dbFile <- cmdargs[5]
+
+n_param <- cmdargs[6]
+
+n_min <- as.numeric(cmdargs[7])
+
 subjectsExcl=NA
 
 message("1. Session Info")
@@ -67,16 +72,28 @@ print(gs_lm_data$ID)
 res<-eregr_meta_int_select_latest_lm_results(con,study_Id,site_VEC,lm_list)
 saveRDS(res,file=paste(Results_Path,'/',"res_latest_lm.rds",sep=''))
 
+if (n_param == "overall") {
+	res <- res %>%
+		filter(n_overall >= n_min) %>%
+			select(-n_overall,-n_cont,-n_pat)
+} else if (n_param == "cohd") {
+	res <- res %>%
+		filter((n_pat >= n_min) & (n_cont >= n_min) ) %>%
+			select(-n_overall,-n_cont,-n_pat)
+} else 
+	stop("Incorrect name for minimum N parameter")
+
+saveRDS(res,file=paste(Results_Path,'/',"res_latest_lm_filtered.rds",sep=''))
+
 message("5. Running meta-analysis")
 tic()
 meta_sess_id_and_time <- eregr_int_get_unique_time_id()
 meta_res <- map(ROI_VEC, function(x) {
-                map(lm_list, safely(~eregr_meta_analysis_onemodel(con,study_Id,.,x,res,meta_sess_id_and_time)))
+                map(lm_list, safely(~eregr_meta_analysis_onemodel(con,study_Id,.,x,res,meta_sess_id_and_time,compare_models=TRUE)))
     })
 toc()
 
-
-saveRDS(res,file=paste(Results_Path,'/',"res_meta.rds",sep=''))
+saveRDS(meta_res,file=paste(Results_Path,'/',"res_meta.rds",sep=''))
 
 message("6. Disconnecting from database")
 is_disconnected <- eregr_disconnect(con)
