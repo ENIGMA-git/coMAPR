@@ -1931,7 +1931,7 @@ AND SLA.studyID=RES_MAX.studyID",study_Id,lm_Id,ROI,metric,paste(site_list,colla
 }
 
 
-forest_plot_cohd <- function(db_conn, study_Id, lm_Id, ROI,metric,site_list, use_meta=FALSE) {
+forest_plot_cohd <- function(db_conn, study_Id, lm_Id, ROI,metric,site_list, use_meta=FALSE,rename_site_map=NA) {
     message(lm_Id)
     query <- sprintf("SELECT LRK.res_keyID,vertex,var,SLA.studyID,SLA.siteID,LM.lmID,cohens_d,cohens_se,cohens_low_ci,cohens_high_ci,cohens_pval 
 FROM lm_cohend_results LCR, lm_results_keys LRK, linear_model LM, session_lm_analysis SLA, (SELECT studyID,siteID,lmID,ROI,metric,MAX(result_sessionID) as max_res_sess_ID FROM lm_results_keys LRK, session_lm_analysis SLA
@@ -1950,6 +1950,23 @@ AND SLA.studyID=RES_MAX.studyID",study_Id,lm_Id,ROI,metric,paste(site_list,colla
     res <- dbGetQuery(db_conn,query) %>% arrange(siteID)
 print(query)
 print(res)
+print(rename_site_map)
+    if(!is.na(rename_site_map)) {
+	rename_map=read.csv(rename_site_map)
+	print(rename_map)
+	renamer <-function(site_id,match_id) {
+		if (is.na(match_id)){
+			return (site_id)
+		}
+		else 
+			print(match_id)
+print(rename_map$new[match_id])
+			return (as.character(rename_map$new[match_id]))
+
+	}
+	res$siteID=map2_chr(res$siteID,match(res$siteID,rename_map$old),~renamer(.x,.y))
+	print(res$siteID)
+    }
     if(use_meta) {
         query_meta <- sprintf("SELECT * FROM meta_cohd_results MCR, session_meta SM, (SELECT MAX(session_meta_ID) AS max_meta_ID FROM session_meta SM 
 WHERE studyID='%s' AND lmID='%s' AND ROI='%s'
@@ -1958,7 +1975,7 @@ WHERE MCR.meta_key_ID=SM.meta_key_ID AND
 SM.session_meta_ID=max_meta_ID
 AND studyID='%s' AND lmID='%s' AND ROI='%s' AND metric='%s'",study_Id,lm_Id,ROI,study_Id,lm_Id,ROI,metric)
         meta_res <- dbGetQuery(db_conn,query_meta)
-        return (forestplot(title = "Cohen's D summary\n ROI: ACR\n model: SZPatVsCont_all_covariates",labeltext = c(res$siteID,"SUMMARY"),
+        return (forestplot(title = sprintf( "Cohen's D summary\n ROI: %s\n metric: %s\n model: %s",ROI,metric,lm_Id),labeltext = c(res$siteID,"SUMMARY"),
            mean = c(res$cohens_d,meta_res$cohd),
            lower  = c(res$cohens_low_ci,meta_res$ci_lb), 
            upper = c(res$cohens_high_ci,meta_res$ci_ub),
