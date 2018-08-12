@@ -1,8 +1,6 @@
 #!/bin/bash
-#$ -S /bin/bash
-# #$ -o /ifshome/disaev/SZ_Basel_SCORE.log
 
-#----Wrapper for csv version of mass_uv_regr.R script.
+#----Wrapper for csv version of meta-analysis script.
 #----See readme to change the parameters for your data
 #-Dmitry Isaev
 #-Boris Gutman
@@ -17,6 +15,9 @@
 config="./config_meta_csv.sh"
 
 source $config
+
+n_param=$1
+n_value=$2
 ## These are all you -- enter your site ID and paths to your files
 
 ## how are you running this?? Command-line or on Q-SUB
@@ -94,8 +95,6 @@ fi
 
 
 #---Section 6. DO NOT EDIT. Running the R script
-source /ifshome/disaev/.bashrc
-source activate conda27
 cd ${scriptDir}
 for ((i=${start_pt}; i<=${end_pt};i++));
 do
@@ -108,7 +107,9 @@ do
 			${SITE_LIST} \
 			${ROI_LIST} \
 			${resDir} \
-			${dbFile}  < ${scriptDir}/eregr_run_meta_csv.R"
+			${dbFile} \
+			${n_param} \
+			${n_value} < ${scriptDir}/eregr_run_meta_csv.R"
 
 	echo $cmd &> $LOG
 	echo " " &>> $LOG
@@ -116,4 +117,3 @@ do
 	
 done
 
-source deactivate

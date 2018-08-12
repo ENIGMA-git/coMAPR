@@ -1,4 +1,4 @@
-# mass_uv_regr_v20
+# coMAPR
 
-A database-backed set of routines for linear modelling and meta-analysis of brain data
+A database-backed set of routines for linear modelling and meta-analysis of Neuroimaging data
 `
