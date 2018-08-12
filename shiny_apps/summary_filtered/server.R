@@ -17,7 +17,7 @@ function(input, output) {
   # !!! replace this path to path to your 'lib_eregr_core.R'
   suppressPackageStartupMessages(source(file='/path_to_lib_eregr_core/lib_eregr_core.R'))
   # !!! replace this path to path to your 'database_connect.R'
-  suppressPackageStartupMessages(source(file='/path_to_database_connect/database_connect_mdd.R'))
+  suppressPackageStartupMessages(source(file='/path_to_database_connect/database_connect.R'))
   
   prepare_covars <- function() {
     
