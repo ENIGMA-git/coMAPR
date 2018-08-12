@@ -11,12 +11,12 @@ library(tidyr)
 # 2018
 
 shinyServer(function(input, output) {
-
+  # !!! replace this path to path to your 'lib_eregr_core.R'
+  suppressPackageStartupMessages(source(file='/path_to_lib_eregr_core/lib_eregr_core.R'))
+  # !!! replace this path to path to your 'database_connect.R'
+  suppressPackageStartupMessages(source(file='/path_to_database_connect/database_connect.R'))
+  
   prepare_forestplot <- function() {
-    # !!! replace this path to path to your 'lib_eregr_core.R'
-    suppressPackageStartupMessages(source(file='/path_to_lib_eregr_core/lib_eregr_core.R'))
-    # !!! replace this path to path to your 'database_connect.R'
-    suppressPackageStartupMessages(source(file='/path_to_database_connect/database_connect.R'))
 
     db_conn <- database_connect()
     on.exit(dbDisconnect(db_conn))
@@ -25,11 +25,7 @@ shinyServer(function(input, output) {
     
   }
   prepare_demog_summ <- function() {
-    # !!! replace this path to path to your 'lib_eregr_core.R'
-    suppressPackageStartupMessages(source(file='/path_to_lib_eregr_core/lib_eregr_core.R'))
-    # !!! replace this path to path to your 'database_connect.R'
-    suppressPackageStartupMessages(source(file='/path_to_database_connect/database_connect_mdd.R'))
-    
+
     db_conn <- database_connect()
     on.exit(dbDisconnect(db_conn))
     site_list <- dbGetQuery(db_conn,sprintf("SELECT * FROM sites_in_study WHERE studyID='%s'",input$studyID))
